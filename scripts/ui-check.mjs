@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import {getPlaywright,config} from '../src/config.mjs';
+const browser=await getPlaywright().chromium.launch({channel:'msedge',headless:true});
+const page=await browser.newPage({viewport:{width:1512,height:1100}}),errors=[];
+page.on('pageerror',e=>errors.push(e.message));
+await page.goto(`http://${config.host}:${config.port}/`);await page.waitForTimeout(1200);
+assert.equal(await page.locator('input[name="platform"]:checked').count(),5);
+assert.equal(await page.locator('#keyword').inputValue(),'什么是React agent？');
+await page.screenshot({path:config.outputDir+'/工作台-桌面.png',fullPage:true});
+await page.getByRole('button',{name:'影响力口径',exact:true}).click();assert.equal(await page.locator('#method').isVisible(),true);assert.equal(await page.locator('#results').isVisible(),false);
+await page.getByRole('button',{name:'内容库',exact:true}).click();assert.equal(await page.locator('#library').isVisible(),true);
+await page.getByRole('button',{name:'采集任务',exact:true}).click();
+await page.setViewportSize({width:390,height:844});await page.screenshot({path:config.outputDir+'/工作台-手机.png',fullPage:true});
+const sizes=await page.evaluate(()=>({screen:innerWidth,content:document.documentElement.scrollWidth}));assert.ok(sizes.content<=sizes.screen+1,JSON.stringify(sizes));
+await page.locator('#content-search').fill('不存在的内容123456');assert.equal(await page.locator('#content-list .empty').count(),1);await page.locator('#content-search').fill('');
+assert.deepEqual(errors,[]);await fs.writeFile(config.outputDir+'/ui-check.json',JSON.stringify({desktop:true,mobileNoOverflow:true,nav:true,filters:true,errors},null,2));console.log('UI_CHECK_PASSED');await browser.close();

@@ -1,0 +1,22 @@
+{
+  "name": "knowflow",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "知流 KnowFlow：多平台内容采集、视频转写与互动影响力分析，面向知识检索和内容创作扩展",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "smoke": "node scripts/live-test.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.62.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TMENG888/KnowFlow.git"
+  }
+}
