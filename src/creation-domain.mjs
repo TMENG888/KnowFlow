@@ -1,10 +1,11 @@
 import {createHash} from 'node:crypto';
+import {prepareKnowledge} from './content-cleaning.mjs';
 export const hash=s=>createHash('sha256').update(s).digest('hex');
 export const normalize=s=>String(s||'').replace(/\s+/g,' ').trim();
-export const textOf=i=>String(i.kind==='video'?i.transcript:i.body||i.transcript||'').trim();
+export const textOf=i=>prepareKnowledge(i).text;
 export const sourceKey=i=>i.platform+':'+i.sourceId;
 export function articleStructure(item){
- const text=String(item.body||'').trim(),lines=text.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+ const text=textOf(item),lines=text.split(/\n+/).map(s=>s.trim()).filter(Boolean);
  const headings=[...new Set(lines.filter(s=>s.length>=3&&s.length<=90&&!/扫码|领取|免费分享|免费领取/.test(s)&&/^(?:#{1,6}\s+|第[一二三四五六七八九十百\d]+[章节部分]|[一二三四五六七八九十]+[、．.：:]|[（(][一二三四五六七八九十\d]+[）)]|\d+(?:\.\d+)*[、．.：:]\s*|(?:核心概念|工作原理|架构设计|总结|实现步骤|适用场景|优缺点)[：:]?\s*$)/.test(s)))];
  return {eligible:item.contentStatus==='completed'&&item.kind!=='video'&&text.length>=600&&lines.length>=6&&headings.length>=2,bodyChars:text.length,paragraphCount:lines.length,headingCount:headings.length,headings:headings.slice(0,12),method:'visible-headings-and-paragraphs-v1'};
 }
@@ -25,7 +26,7 @@ export function chunks(text,max=360,overlap=50){
 export function corpus(items,reference){
  const refHash=hash(normalize(textOf(reference))),seen=new Set([refHash]);const refChunks=new Set(chunks(textOf(reference)).map(c=>c.hash));const result=[];
  for(const i of items){const text=textOf(i),h=hash(normalize(text));if(i.contentStatus!=='completed'||text.length<80||sourceKey(i)===sourceKey(reference)||i.url&&i.url===reference.url||seen.has(h))continue;seen.add(h);
-  result.push({key:sourceKey(i),title:i.title,url:i.url,platform:i.platform,sourceId:i.sourceId,text,contentHash:h,chunks:chunks(text).filter(c=>!refChunks.has(c.hash))});
+  const images=prepareKnowledge(i).blocks.filter(b=>b.type==='image'&&b.status==='completed');result.push({key:sourceKey(i),title:i.title,url:i.url,platform:i.platform,sourceId:i.sourceId,text,contentHash:h,chunks:chunks(text).filter(c=>!refChunks.has(c.hash)).map(c=>({...c,imageSources:images.filter(b=>b.textStart<c.end&&b.textEnd>c.start).map(b=>({id:b.id,url:b.url,placement:b.placement,model:b.model,description:b.description,caveats:b.caveats,derived:true}))}))});
  }return result.filter(s=>s.chunks.length);
 }
 export function validateOutline(data,ps){

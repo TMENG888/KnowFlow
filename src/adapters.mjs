@@ -3,6 +3,8 @@ import {Observer,walk,AccessError} from './browser.mjs';
 import {PLATFORMS} from './config.mjs';
 import {douyinSearchCards} from './douyin-ui.mjs';
 import {extractBilibili} from './bilibili.mjs';
+import {readContentDOM} from './content-dom.mjs';
+import {imageIdentity} from './content-cleaning.mjs';
 const mediaUrl=v=>typeof v==='string'?v:(v?.url_list||v?.urlList||[]).find(u=>u.startsWith('https://'))||v?.url||null;
 const iso=v=>{if(v==null)return null;const d=new Date(typeof v==='number'?(v<1e12?v*1000:v):v);return Number.isNaN(+d)?String(v):d.toISOString();};
 export function fromObserved(platform,raw){
@@ -72,6 +74,9 @@ export async function extractDetail(page,platform,candidate,browser,{openedObser
   const item={platform,sourceId:candidate.id,url:canonical(platform,dom.url)?.url||candidate.url,title:(platform==='douyin'?(observed.title||candidate.title||dom.title):(dom.title||observed.title||candidate.title))||'',body:(platform==='douyin'?(observed.body||dom.body):(dom.body||observed.body))||'',summary:candidate.summary||dom.description||'',author:observed.author||dom.author||null,publishedAt:observed.publishedAt||dom.publishedAt||null,kind,images:[...new Set([...(observed.images||[]),...dom.images])],metrics,metricSource:raw?.pageStateSource?'rendered_card_state_and_dom':raw?'browser_response_and_dom':'visible_dom',mediaUrl:dom.videos.find(v=>/^https?:/.test(v.url||''))?.url||observed.mediaUrl||null,durationSeconds:dom.videos.find(v=>v.duration)?.duration||observed.durationSeconds||null,captions:dom.videos.flatMap(v=>v.textTracks.flatMap(t=>t.cues)),captionTracks:dom.videos.flatMap(v=>v.tracks),transcript:null,transcriptStatus:kind==='video'?'pending':'not_applicable',collectedAt:new Date().toISOString(),extractionVersion:'playwright-dom-response-v2'};
   if(kind!=='video'&&item.body.replace(/\s/g,'').length<25)throw new Error('DETAIL_CONTENT_MISSING：详情正文不足，搜索摘要未计入正文');
   item.imageUrls=[...item.images];item.videoUrls=[...new Set([item.mediaUrl,...(observed.videoUrls||[]),...dom.videos.map(v=>v.url)].filter(u=>/^https?:/.test(u||'')))];item.videoUrl=item.videoUrls[0]||null;item.resourceLinksObservedAt=item.collectedAt;item.videoUrlMayExpire=item.videoUrls.length>0;
+  item.contentBlocks=kind==='video'?[]:await page.evaluate(readContentDOM,{platform});
+  // Preserve response-observed gallery order without inventing paragraph anchors.
+  if(kind!=='video'&&['xiaohongshu','douyin'].includes(platform)&&observed.images?.length){const known=new Set(item.contentBlocks.filter(b=>b.type==='image').map(b=>imageIdentity(b.url)));item.contentBlocks.push(...observed.images.filter(url=>!known.has(imageIdentity(url))).map((url,n)=>({type:'image',id:'gallery-'+n,url,placement:'gallery_order_only',order:item.contentBlocks.length+n})));}
   item.contentHash=contentHash(item.body);return item;
  }finally{if(!openedObserver)observer.close();}
 }

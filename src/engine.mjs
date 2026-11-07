@@ -94,7 +94,7 @@ export class Engine{
         }
         item.contentStatus=item.kind==='video'?(item.transcriptStatus==='completed'?'completed':'pending'):'completed';
         item.contentHash=contentHash(item.kind==='video'?(item.transcript||item.body):item.body);item.mediaUrl=undefined;item.captionTracks=undefined;item.captions=undefined;
-        this.store.item(task.id,item);previous.set(item.sourceId,item);
+        this.store.item(task.id,item);this.knowledge?.enqueue(task.id,item);previous.set(item.sourceId,item);
         stage.accepted=[...previous.values()].filter(x=>x.contentStatus==='completed').length;stage.pendingContent=previous.size-stage.accepted;
         this.log(task,platform,item.contentStatus==='completed'?'正文已保存：'+item.title:'视频主体内容待补：'+item.title,item.contentStatus==='completed'?'info':'warning',{sourceId:c.id,transcriptStatus:item.transcriptStatus});
         signal.removeEventListener('abort',close);

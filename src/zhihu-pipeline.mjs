@@ -74,7 +74,7 @@ export async function collectZhihu(engine,task,stage,signal){
     item.evidence=await engine.evidence(detail,task,platform,job.sourceId);
     if(item.kind==='video'&&task.transcribeVideos)item=await engine.mediaSlots.run(()=>transcribe(item,task.id,{signal,onProgress:message=>{stage.message=message;engine.save(task);}}),signal);
     item.contentStatus=item.kind==='video'?(item.transcriptStatus==='completed'?'completed':'pending'):'completed';item.contentHash=contentHash(item.transcript||item.body);delete item.mediaUrl;delete item.captionTracks;delete item.captions;
-    if(signal.aborted)throw new Error('STOP_REQUESTED');store.item(task.id,item);saved.set(item.sourceId,item);job.status=item.contentStatus==='completed'?'completed':'pending_content';job.finishedAt=new Date().toISOString();store.saveDetailJob(task.id,job);
+     if(signal.aborted)throw new Error('STOP_REQUESTED');store.item(task.id,item);engine.knowledge?.enqueue(task.id,item);saved.set(item.sourceId,item);job.status=item.contentStatus==='completed'?'completed':'pending_content';job.finishedAt=new Date().toISOString();store.saveDetailJob(task.id,job);
     stage.accepted=[...saved.values()].filter(i=>i.contentStatus==='completed').length;stage.pendingContent=[...saved.values()].filter(i=>i.contentStatus==='pending').length;stage.queuedDetails=queueCount();engine.save(task);log('未登录详情正文已保存：'+item.title,{channel:'detail',sourceId:item.sourceId});
    }catch(e){
     job.status=signal.aborted?'pending':e.scope==='item'?'restricted':'blocked';job.error=e.message;store.saveDetailJob(task.id,job);stage.failedDetails++;

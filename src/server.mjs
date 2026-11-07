@@ -9,6 +9,7 @@ import {canonical} from './domain.mjs';
 import {extractDetail} from './adapters.mjs';
 import {CreationService} from './creation.mjs';
 import {DiscoveryService} from './discovery-service.mjs';
+import {KnowledgeService} from './knowledge.mjs';
 const lockPath=path.join(ROOT,'data','server.lock');let lock;
 try{lock=await fs.open(lockPath,'wx');}catch(e){
  if(e.code!=='EEXIST')throw e;const old=JSON.parse(await fs.readFile(lockPath,'utf8'));let alive=false;try{process.kill(old.pid,0);alive=true;}catch{}
@@ -16,7 +17,8 @@ try{lock=await fs.open(lockPath,'wx');}catch(e){
 }
 await lock.writeFile(JSON.stringify({pid:process.pid,port:config.port}));await lock.close();
 const store=new Store(),engine=new Engine(store);engine.recover();
-const creation=new CreationService(store,{scored:id=>engine.scored(id)}),discovery=await new DiscoveryService().init();
+const knowledge=new KnowledgeService(store);knowledge.cleanExisting();engine.knowledge=knowledge;
+const creation=new CreationService(store,{scored:id=>engine.scored(id),knowledge}),discovery=await new DiscoveryService().init();
 const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.png':'image/png','.json':'application/json; charset=utf-8','.wav':'audio/wav'};
 function send(res,status,data,headers={}){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...headers});res.end(typeof data==='string'?data:JSON.stringify(data));}
 async function body(req,max=1000000){let size=0;const parts=[];for await(const chunk of req){size+=chunk.length;if(size>max)throw new Error('请求过大');parts.push(chunk);}try{return JSON.parse(Buffer.concat(parts).toString('utf8')||'{}');}catch{throw new Error('请求内容不是有效JSON');}}
@@ -31,6 +33,8 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='GET'&&p==='/api/creation-settings')return send(res,200,{configured:await creation.provider.configured(),model:creation.provider.model,embeddingModel:'BAAI/bge-small-zh-v1.5',localEmbedding:!!config.embeddingModel,scope:'task',active:creation.active});
   if(req.method==='POST'&&p==='/api/creation-settings'){const input=await body(req,4000);return send(res,200,await creation.provider.configure(String(input.key||'')));}
   if(req.method==='GET'&&p==='/api/creations')return send(res,200,{jobs:creation.list(),active:creation.active});
+  const knowledgeRoute=p.match(/^\/api\/tasks\/([a-f\d-]{36})\/knowledge(?:\/(stop))?$/);
+  if(knowledgeRoute){const taskId=knowledgeRoute[1];if(!store.task(taskId))throw new Error('采集任务不存在');if(req.method==='GET')return send(res,200,knowledge.summary(taskId));if(req.method==='POST')return send(res,200,knowledgeRoute[2]?knowledge.stop(taskId):knowledge.start(taskId,await body(req,2000)));}
   if(req.method==='GET'&&p==='/api/creation-reference')return send(res,200,creation.recommend(url.searchParams.get('taskId')));
   if(req.method==='GET'&&p==='/api/reference-candidates')return send(res,200,{candidates:creation.candidates(url.searchParams.get('taskId'))});
   if(req.method==='POST'&&p==='/api/reference-candidates')return send(res,200,creation.candidate(await body(req,2000)));
@@ -65,12 +69,12 @@ const server=http.createServer(async(req,res)=>{
    if(req.method==='POST'&&action==='stop')return send(res,200,engine.stop(id));
    if(req.method==='GET'&&action==='export'){
     const items=engine.scored(id);if(url.searchParams.get('format')==='csv'){
-     const fields=['platform','sourceId','title','url','kind','author','publishedAt','body','transcript','contentStatus','transcriptStatus','imageUrls','videoUrl','videoUrls','resourceLinksObservedAt','videoUrlMayExpire','audioUrls','transcriptModel','bvid','cid','part','partTitle','metricsExtra'];const rows=[fields.concat(['likes','comments','favorites','shares','views','influence','scoreProvisional','metricCoverage','influenceRank','influenceRankN','scoreVersion','scoredWeight','scoreComponents']).map(csvCell).join(',')];
+     const fields=['platform','sourceId','title','url','kind','author','publishedAt','body','transcript','knowledge','contentBlocks','contentStatus','transcriptStatus','imageUrls','videoUrl','videoUrls','resourceLinksObservedAt','videoUrlMayExpire','audioUrls','transcriptModel','bvid','cid','part','partTitle','metricsExtra'];const rows=[fields.concat(['likes','comments','favorites','shares','views','influence','scoreProvisional','metricCoverage','influenceRank','influenceRankN','scoreVersion','scoredWeight','scoreComponents']).map(csvCell).join(',')];
      for(const i of items)rows.push([...fields.map(k=>i[k]!==null&&typeof i[k]==='object'?JSON.stringify(i[k]):i[k]),...['likes','comments','favorites','shares','views'].map(k=>i.metrics[k]),i.influence?.score,i.influence?.provisional,i.influence?.metricCoverage,i.influence?.rank,i.influence?.rankN,i.influence?.version,i.influence?.scoredWeight,JSON.stringify(i.influence?.components||{})].map(csvCell).join(','));
      return send(res,200,'\uFEFF'+rows.join('\r\n'),{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="content.csv"'});
     }return send(res,200,{task,items,events:store.events(id),detailQueue:store.detailJobs(id)},{'Content-Disposition':'attachment; filename="content.json"'});
    }
-   if(req.method==='GET'&&!action)return send(res,200,{task,items:engine.scored(id),events:store.events(id),recovery:engine.recovery.status(id),detailQueue:store.detailJobs(id)});
+   if(req.method==='GET'&&!action)return send(res,200,{task,items:engine.scored(id),knowledge:knowledge.summary(id),events:store.events(id),recovery:engine.recovery.status(id),detailQueue:store.detailJobs(id)});
   }
   if(req.method==='GET'&&p==='/api/platforms/zhihu/isolation'){
    const list=engine.browser.zhihuListPage,detail=engine.browser.zhihuDetailPage;
@@ -117,4 +121,4 @@ const server=http.createServer(async(req,res)=>{
 server.listen(config.port,config.host,()=>console.log(`知流 KnowFlow http://${config.host}:${config.port}`));
 server.on('error',e=>{console.error(e.message);fs.unlink(lockPath).catch(()=>{});process.exit(1);});
 process.on('exit',()=>{try{import('node:fs').then(fs=>fs.unlinkSync(lockPath));}catch{}});
-for(const sig of ['SIGINT','SIGTERM'])process.on(sig,async()=>{if(engine.running)engine.stop(engine.running);if(creation.active)creation.stop(creation.active);await discovery.jobs.shutdown();server.close();fs.unlink(lockPath).finally(()=>process.exit(0));});
+for(const sig of ['SIGINT','SIGTERM'])process.on(sig,async()=>{if(engine.running)engine.stop(engine.running);if(creation.active)creation.stop(creation.active);for(const id of knowledge.tasks.keys())knowledge.stop(id);await discovery.jobs.shutdown();server.close();fs.unlink(lockPath).finally(()=>process.exit(0));});

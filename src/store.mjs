@@ -1,6 +1,7 @@
 import {DatabaseSync} from 'node:sqlite';
 import path from 'node:path';
 import {ROOT} from './config.mjs';
+import {prepareKnowledge} from './content-cleaning.mjs';
 export class Store{
  constructor(file=path.join(ROOT,'data','hub.sqlite')){
   this.db=new DatabaseSync(file);this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
@@ -11,12 +12,13 @@ export class Store{
    CREATE TABLE IF NOT EXISTS detail_job(task_id TEXT,platform TEXT,source_id TEXT,payload TEXT NOT NULL,PRIMARY KEY(task_id,platform,source_id));
    CREATE TABLE IF NOT EXISTS creation(id TEXT PRIMARY KEY,created_at TEXT,payload TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS embedding(model TEXT,hash TEXT,vector TEXT NOT NULL,PRIMARY KEY(model,hash));
+   CREATE TABLE IF NOT EXISTS image_description(key TEXT PRIMARY KEY,payload TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS reference_candidate(task_id TEXT,platform TEXT,source_id TEXT,payload TEXT NOT NULL,PRIMARY KEY(task_id,platform,source_id));`);
  }
  saveTask(t){this.db.prepare('INSERT INTO task VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(t.id,t.createdAt,JSON.stringify(t));return t;}
  tasks(){return this.db.prepare('SELECT payload FROM task ORDER BY created_at DESC LIMIT 100').all().map(r=>JSON.parse(r.payload));}
  task(id){const r=this.db.prepare('SELECT payload FROM task WHERE id=?').get(id);return r?JSON.parse(r.payload):null;}
- item(t,item){this.db.prepare('INSERT INTO item VALUES(?,?,?,?) ON CONFLICT(task_id,platform,source_id) DO UPDATE SET payload=excluded.payload').run(t,item.platform,item.sourceId,JSON.stringify(item));}
+ item(t,item){item.knowledge=prepareKnowledge(item);this.db.prepare('INSERT INTO item VALUES(?,?,?,?) ON CONFLICT(task_id,platform,source_id) DO UPDATE SET payload=excluded.payload').run(t,item.platform,item.sourceId,JSON.stringify(item));this.onItem?.(t,item);}
  items(id){return this.db.prepare('SELECT payload FROM item WHERE task_id=?').all(id).map(r=>JSON.parse(r.payload));}
  allItems(){return this.db.prepare('SELECT payload FROM item ORDER BY rowid DESC LIMIT 20000').all().map(r=>JSON.parse(r.payload));}
  event(id,data){const e={at:new Date().toISOString(),...data};this.db.prepare('INSERT INTO event(task_id,at,payload) VALUES(?,?,?)').run(id,e.at,JSON.stringify(e));return e;}
@@ -32,6 +34,8 @@ export class Store{
  creations(){return this.db.prepare('SELECT payload FROM creation ORDER BY created_at DESC LIMIT 100').all().map(r=>JSON.parse(r.payload));}
  embedding(model,hash){const row=this.db.prepare('SELECT vector FROM embedding WHERE model=? AND hash=?').get(model,hash);return row?JSON.parse(row.vector):null;}
  saveEmbedding(model,hash,vector){this.db.prepare('INSERT OR REPLACE INTO embedding VALUES(?,?,?)').run(model,hash,JSON.stringify(vector));}
+ imageDescription(key){const r=this.db.prepare('SELECT payload FROM image_description WHERE key=?').get(key);return r?JSON.parse(r.payload):null;}
+ saveImageDescription(key,value){this.db.prepare('INSERT OR REPLACE INTO image_description VALUES(?,?)').run(key,JSON.stringify(value));}
  referenceCandidates(taskId){return this.db.prepare('SELECT payload FROM reference_candidate WHERE task_id=? ORDER BY rowid DESC').all(taskId).map(r=>JSON.parse(r.payload));}
  saveReferenceCandidate(c){this.db.prepare('INSERT OR IGNORE INTO reference_candidate VALUES(?,?,?,?)').run(c.taskId,c.platform,c.sourceId,JSON.stringify(c));}
  removeReferenceCandidate(taskId,platform,sourceId){this.db.prepare('DELETE FROM reference_candidate WHERE task_id=? AND platform=? AND source_id=?').run(taskId,platform,sourceId);}
