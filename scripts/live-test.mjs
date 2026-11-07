@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
-import {config} from '../src/config.mjs';
+import {config,PLATFORMS} from '../src/config.mjs';
 const base=`http://${config.host}:${config.port}`;
-const response=await fetch(base+'/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keyword:'什么是React agent？',platforms:['douyin','xiaohongshu','toutiao','zhihu','csdn'],target:3,transcribeVideos:true})});
+const response=await fetch(base+'/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keyword:'什么是React agent？',platforms:Object.keys(PLATFORMS),target:3,transcribeVideos:true})});
 const task=await response.json();if(!response.ok)throw new Error(JSON.stringify(task));console.log('TASK '+task.id);
 await fs.writeFile(config.outputDir+'/live-task.json',JSON.stringify(task,null,2));
 let last='';

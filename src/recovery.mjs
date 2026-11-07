@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {canonical} from './domain.mjs';
 import {PLATFORMS} from './config.mjs';
-const COOKIE_NAMES={douyin:['sessionid','sessionid_ss'],xiaohongshu:['web_session'],zhihu:['z_c0'],csdn:['UserToken','UserName'],toutiao:['sessionid']};
+const COOKIE_NAMES={bilibili:['SESSDATA'],douyin:['sessionid','sessionid_ss'],xiaohongshu:['web_session'],zhihu:['z_c0'],csdn:['UserToken','UserName'],toutiao:['sessionid']};
 export function readiness(current,baseline,{reason,until,expectedSource,now=Date.now()}={}){
  if(until&&now<Date.parse(until))return{ready:false,reason:'timed_protection_preserved'};
  if(expectedSource&&canonical('zhihu',current.url)?.id!==expectedSource)return{ready:false,reason:'awaiting_original_detail'};
@@ -23,7 +23,7 @@ export class RecoveryMonitor{
   const links=await page.locator('a[href]').evaluateAll(ns=>ns.map(n=>n.href)).catch(()=>[]);
   let resultCount=new Set(links.map(u=>canonical(platform,u)?.id).filter(Boolean)).size;
   if(platform==='douyin')resultCount+=await page.locator('div:has(> .videoImage)').count();
-  const url=page.url(),isSearch=/\/search(?:_result|\/|\?|$)|so\.csdn\.net/.test(url);
+  const url=page.url(),isSearch=/\/search(?:_result|\/|\?|$)|so\.csdn\.net|search\.bilibili\.com/.test(url);
   const detail=canonical(platform,url);let hasDetail=false;
   if(detail)hasDetail=await page.locator('#content_views,article,.Post-RichTextContainer,.AnswerItem .RichText,#detail-desc,[data-e2e="video-desc"],video').count()>0;
   return{auth:selected.length>0,authFingerprint,issue,results:isSearch?resultCount:hasDetail?1:0,url};

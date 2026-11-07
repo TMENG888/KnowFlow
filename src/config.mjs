@@ -21,6 +21,7 @@ export function getPlaywright(){
  try{return require('playwright');}catch{if(config.playwrightFallback)return createRequire(config.playwrightFallback)('playwright');throw new Error('请先运行 npm install 安装 Playwright');}
 }
 export const PLATFORMS={
+ bilibili:{name:'B站',home:'https://www.bilibili.com/',hosts:['bilibili.com'],search:q=>'https://search.bilibili.com/all?keyword='+encodeURIComponent(q)},
  douyin:{name:'抖音',home:'https://www.douyin.com/',hosts:['douyin.com'],search:q=>'https://www.douyin.com/search/'+encodeURIComponent(q)+'?type=general'},
  xiaohongshu:{name:'小红书',home:'https://www.xiaohongshu.com/',hosts:['xiaohongshu.com'],search:q=>'https://www.xiaohongshu.com/search_result?keyword='+encodeURIComponent(q)+'&source=web_explore_feed'},
  toutiao:{name:'今日头条',home:'https://www.toutiao.com/',hosts:['toutiao.com'],search:q=>'https://so.toutiao.com/search?keyword='+encodeURIComponent(q)+'&pd=synthesis'},

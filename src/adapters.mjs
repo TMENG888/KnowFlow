@@ -2,6 +2,7 @@ import {canonical,parseCount,contentHash} from './domain.mjs';
 import {Observer,walk,AccessError} from './browser.mjs';
 import {PLATFORMS} from './config.mjs';
 import {douyinSearchCards} from './douyin-ui.mjs';
+import {extractBilibili} from './bilibili.mjs';
 const mediaUrl=v=>typeof v==='string'?v:(v?.url_list||v?.urlList||[]).find(u=>u.startsWith('https://'))||v?.url||null;
 const iso=v=>{if(v==null)return null;const d=new Date(typeof v==='number'?(v<1e12?v*1000:v):v);return Number.isNaN(+d)?String(v):d.toISOString();};
 export function fromObserved(platform,raw){
@@ -22,6 +23,7 @@ export function fromObserved(platform,raw){
 }
 export async function extractDetail(page,platform,candidate,browser,{openedObserver=null,alreadyOpened=false}={}){
  if(!alreadyOpened)throw new Error('UI_CLICK_REQUIRED：详情必须从实际搜索结果点击打开');
+ if(platform==='bilibili')return extractBilibili(page,candidate,browser,{openedObserver});
  const observer=openedObserver||new Observer(page,platform);
  try{
   await browser.gate(page);

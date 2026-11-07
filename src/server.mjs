@@ -4,6 +4,7 @@ import path from 'node:path';
 import {config,ROOT,PLATFORMS} from './config.mjs';
 import {Store} from './store.mjs';
 import {Engine} from './engine.mjs';
+import {SCORING_VERSION} from './scoring.mjs';
 import {canonical} from './domain.mjs';
 import {extractDetail} from './adapters.mjs';
 const lockPath=path.join(ROOT,'data','server.lock');let lock;
@@ -22,7 +23,7 @@ const server=http.createServer(async(req,res)=>{
   if(req.headers.host!==`127.0.0.1:${config.port}`&&req.headers.host!==`localhost:${config.port}`)return send(res,403,{error:'无效主机'});
   const url=new URL(req.url,'http://127.0.0.1'),p=url.pathname;
   if(req.method!=='GET'&&req.headers.origin&&!['http://127.0.0.1:'+config.port,'http://localhost:'+config.port].includes(req.headers.origin))return send(res,403,{error:'禁止跨站操作'});
-  if(req.method==='GET'&&p==='/api/state')return send(res,200,{platforms:Object.entries(PLATFORMS).map(([id,p])=>({id,name:p.name,protection:store.protection(id)})),tasks:store.tasks(),running:engine.running,scorePolicy:{weights:config.scoreWeights,minCalibrationSize:config.minCalibrationSize,windowDays:90},version:'0.1.0'});
+  if(req.method==='GET'&&p==='/api/state')return send(res,200,{platforms:Object.entries(PLATFORMS).map(([id,p])=>({id,name:p.name,protection:store.protection(id)})),tasks:store.tasks(),running:engine.running,asrPolicy:{model:'Qwen/Qwen3-ASR-0.6B',backend:config.asrBackend,device:config.asrDevice,chunkSeconds:config.asrChunkSeconds,timestampType:'audio_chunk'},scorePolicy:{version:SCORING_VERSION,scope:'all-platforms/all-types',missingPolicy:'fixed-weight-no-redistribution',weights:config.scoreWeights,minCalibrationSize:config.minCalibrationSize,windowDays:90},version:'0.1.0'});
   if(req.method==='POST'&&p==='/api/tasks')return send(res,201,engine.create(await body(req)));
   const taskRoute=p.match(/^\/api\/tasks\/([a-f\d-]+)(?:\/(retry|stop|export))?$/);
   if(taskRoute){const [,id,action]=taskRoute;const task=store.task(id);if(!task)return send(res,404,{error:'任务不存在'});
@@ -30,8 +31,8 @@ const server=http.createServer(async(req,res)=>{
    if(req.method==='POST'&&action==='stop')return send(res,200,engine.stop(id));
    if(req.method==='GET'&&action==='export'){
     const items=engine.scored(id);if(url.searchParams.get('format')==='csv'){
-     const fields=['platform','sourceId','title','url','kind','author','publishedAt','body','transcript','contentStatus','transcriptStatus','imageUrls','videoUrl','videoUrls','resourceLinksObservedAt','videoUrlMayExpire'];const rows=[fields.concat(['likes','comments','favorites','shares','views','influence','scoreProvisional','metricCoverage']).map(csvCell).join(',')];
-     for(const i of items)rows.push([...fields.map(k=>Array.isArray(i[k])?JSON.stringify(i[k]):i[k]),...['likes','comments','favorites','shares','views'].map(k=>i.metrics[k]),i.influence?.score,i.influence?.provisional,i.influence?.metricCoverage].map(csvCell).join(','));
+     const fields=['platform','sourceId','title','url','kind','author','publishedAt','body','transcript','contentStatus','transcriptStatus','imageUrls','videoUrl','videoUrls','resourceLinksObservedAt','videoUrlMayExpire','audioUrls','transcriptModel','bvid','cid','part','partTitle','metricsExtra'];const rows=[fields.concat(['likes','comments','favorites','shares','views','influence','scoreProvisional','metricCoverage','influenceRank','influenceRankN','scoreVersion','scoredWeight','scoreComponents']).map(csvCell).join(',')];
+     for(const i of items)rows.push([...fields.map(k=>i[k]!==null&&typeof i[k]==='object'?JSON.stringify(i[k]):i[k]),...['likes','comments','favorites','shares','views'].map(k=>i.metrics[k]),i.influence?.score,i.influence?.provisional,i.influence?.metricCoverage,i.influence?.rank,i.influence?.rankN,i.influence?.version,i.influence?.scoredWeight,JSON.stringify(i.influence?.components||{})].map(csvCell).join(','));
      return send(res,200,'\uFEFF'+rows.join('\r\n'),{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="content.csv"'});
     }return send(res,200,{task,items,events:store.events(id),detailQueue:store.detailJobs(id)},{'Content-Disposition':'attachment; filename="content.json"'});
    }

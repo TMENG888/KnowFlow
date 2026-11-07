@@ -5,7 +5,7 @@ const browser=await getPlaywright().chromium.launch({channel:'msedge',headless:t
 const page=await browser.newPage({viewport:{width:1512,height:1100}}),errors=[];
 page.on('pageerror',e=>errors.push(e.message));
 await page.goto(`http://${config.host}:${config.port}/`);await page.waitForTimeout(1200);
-assert.equal(await page.locator('input[name="platform"]:checked').count(),5);
+assert.equal(await page.locator('input[name="platform"]:checked').count(),6);
 assert.equal(await page.locator('#keyword').inputValue(),'什么是React agent？');
 await page.screenshot({path:config.outputDir+'/工作台-桌面.png',fullPage:true});
 await page.getByRole('button',{name:'影响力口径',exact:true}).click();assert.equal(await page.locator('#method').isVisible(),true);assert.equal(await page.locator('#results').isVisible(),false);

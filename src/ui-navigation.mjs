@@ -8,6 +8,7 @@ export const DEFAULT_PACING={action:[1500,3200],read:[2500,4800],scroll:[1100,23
 export function randomDelayRange(kind,policy=config.pacing||DEFAULT_PACING){const pair=policy[kind]||DEFAULT_PACING[kind]||DEFAULT_PACING.action;const low=Math.max(0,Math.floor(pair[0])),high=Math.max(low,Math.floor(pair[1]));return randomInt(low,high+1);}
 export async function pace(page,kind,signal,log=()=>{}){if(signal?.aborted)throw new Error('STOP_REQUESTED');const ms=randomDelayRange(kind);log(`自然操作间隔 ${ms}ms`,{action:'pacing',kind,ms});await page.waitForTimeout(ms);if(signal?.aborted)throw new Error('STOP_REQUESTED');return ms;}
 const INPUTS={
+ bilibili:['.nav-search-input','input.nav-search-input','input[placeholder*="搜索"]','.search-input-el'],
  douyin:['[data-e2e="searchbar-input"]','input[name="keyword"]','input[placeholder*="搜索"]'],
  xiaohongshu:['textarea#search-input-in-feeds','input#search-input','textarea#search-input-ai','.search-input input','input[placeholder*="搜索"]','input[placeholder*="登录探索"]'],
  zhihu:['.SearchBar-input input','input.SearchBar-input','input[placeholder*="搜索"]','input[role="combobox"]'],
@@ -45,12 +46,12 @@ export function searchKeywordMatches(url,keyword){try{const u=new URL(url);const
 export async function visibleCandidates(page,platform,observer){
  await observer.flush();
  if(platform==='douyin'){for(let attempt=0;attempt<12;attempt++){const inline=await douyinSearchCards(page);if(inline.length)return inline;if(!await page.locator('.search-result-card').count())break;await page.waitForTimeout(500);}}
- const selector=platform==='toutiao'?'.cs-header a[href]':platform==='zhihu'?'.Search-container .List-item .ContentItem-title a[href],.SearchResult-Card .ContentItem-title a[href]':'a[href]';
- const links=await page.locator(selector).evaluateAll(ns=>ns.map(n=>({url:n.href,title:n.innerText?.trim().slice(0,250)||'',visible:!!n.getClientRects().length,summary:n.closest('section,.SearchResult-Card,.search-result-card,.csdn-tracking-statistics,.note-item,.cs-card-content')?.innerText?.slice(0,900)||''})).filter(n=>n.visible));
+ const selector=platform==='bilibili'?'.bili-video-card a[href],.video-list .video-item a[href],.video-list-item a[href]':platform==='toutiao'?'.cs-header a[href]':platform==='zhihu'?'.Search-container .List-item .ContentItem-title a[href],.SearchResult-Card .ContentItem-title a[href]':'a[href]';
+ const links=await page.locator(selector).evaluateAll((ns,platform)=>ns.map(n=>{const card=platform==='bilibili'?n.closest('.bili-video-card,.video-item,.video-list-item'):null;return{url:n.href,title:(card?.querySelector('h3,h2')?.getAttribute('title')||card?.querySelector('h3,h2')?.innerText||n.innerText)?.trim().slice(0,250)||'',visible:!!n.getClientRects().length,summary:(card||n.closest('section,.SearchResult-Card,.search-result-card,.csdn-tracking-statistics,.note-item,.cs-card-content'))?.innerText?.slice(0,900)||''};}).filter(n=>n.visible),platform);
  const map=new Map();for(const link of links){const c=canonical(platform,link.url);if(!c)continue;let found=map.get(c.id);if(!found)map.set(c.id,{...c,title:link.title,summary:link.summary,clickHref:link.url});else if(!found.title&&link.title){found.title=link.title;found.clickHref=link.url;}}
  // IDs from unrelated home feeds or invisible response records never become
  // clickable candidates. A current rendered result card must exist.
- for(const candidate of map.values())candidate.raw=observer.entities.findLast(v=>String(v.aweme_id||v.noteId||v.note_id||v.id||'')===candidate.id.replace(/^(answer|article)-/,''));
+ for(const candidate of map.values())candidate.raw=observer.entities.findLast(v=>String(v.bvid||v.aweme_id||v.noteId||v.note_id||v.id||'')===(candidate.bvid||candidate.id.replace(/^(answer|article)-/,'')));
  if(platform==='douyin'&&!map.size){
   const cards=await page.locator('.search-result-card div:has(> .videoImage)').evaluateAll(ns=>ns.filter(n=>n.getClientRects().length).map(n=>({title:n.querySelector('.hu36PKCP')?.innerText?.trim()||n.innerText.trim(),poster:n.querySelector('img')?.src||''})).filter(n=>n.title));
   for(const card of cards){const raw=observer.entities.findLast(v=>v.aweme_id&&String(v.desc||'').trim()===card.title.trim());const id=raw?String(raw.aweme_id):'ui-card:'+createHash('sha256').update(card.title+'|'+card.poster.split('?')[0]).digest('hex').slice(0,20);map.set(id,{id,title:card.title,summary:'',uiCard:true,poster:card.poster,raw});}
@@ -113,7 +114,7 @@ export async function returnToResults(opened,browser,{signal,log=()=>{}}={}){
 }
 export async function readDetail(opened,browser,{signal,log=()=>{}}={}){
  const page=opened.page;await browser.gate(page);
- const roots={xiaohongshu:'#noteContainer,.note-container',douyin:'video,[data-e2e="video-desc"],[data-e2e="detail-video-desc"]',toutiao:'article,.article-content,video',zhihu:'.Post-RichTextContainer,.AnswerItem .RichContent-inner',csdn:'#content_views,#article_content'};
+ const roots={bilibili:'#viewbox_report,h1.video-title,.video-info-container',xiaohongshu:'#noteContainer,.note-container',douyin:'video,[data-e2e="video-desc"],[data-e2e="detail-video-desc"]',toutiao:'article,.article-content,video',zhihu:'.Post-RichTextContainer,.AnswerItem .RichContent-inner',csdn:'#content_views,#article_content'};
  const root=opened.mode==='inline'?page.locator(DOUYIN_FEED+`[data-e2e-vid="${opened.candidate.id}"]`).first():page.locator(roots[opened.platform]).filter({visible:true}).first();
  await root.waitFor({state:'visible',timeout:12000});
  let last=null,stable=0;

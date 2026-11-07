@@ -7,11 +7,12 @@ import {BrowserManager,Observer} from './browser.mjs';
 import {extractDetail} from './adapters.mjs';
 import {deriveTaskState,contentHash,terminalStates} from './domain.mjs';
 import {transcribe} from './media.mjs';
-import {scoreItems} from './scoring.mjs';
+import {scoreItems,selectScoringCorpus} from './scoring.mjs';
 import {RecoveryMonitor} from './recovery.mjs';
 import {startUiSearch,visibleCandidates,clickCandidate,returnToResults,pace,readDetail} from './ui-navigation.mjs';
 import {Semaphore} from './scheduler.mjs';
 import {collectZhihu} from './zhihu-pipeline.mjs';
+import {advanceToutiaoResults} from './toutiao-pagination.mjs';
 export class Engine{
  constructor(store){this.store=store;this.browser=new BrowserManager();this.running=null;this.controllers=new Map();this.pendingRecoveries=new Map();this.mediaSlots=new Semaphore(config.mediaConcurrency??1);this.recovery=new RecoveryMonitor(this.browser,store,async(w,reason)=>{
   if(this.running===w.taskId&&this.enqueueRecovery?.(w.platform)){this.log({id:w.taskId},w.platform,'页面恢复，已独立续采该平台');return;}
@@ -35,7 +36,7 @@ export class Engine{
  stop(id){const task=this.store.task(id);if(!task)throw new Error('任务不存在');task.stopRequested=true;if(this.running!==id)task.status='stopped';this.save(task);this.recovery.stop(id);this.pendingRecoveries.delete(id);this.controllers.get(id)?.abort();return task;}
  drainRecoveries(){if(this.running)return;for(const [id,platforms]of this.pendingRecoveries){this.pendingRecoveries.delete(id);const task=this.store.task(id);if(!task||task.stopRequested)continue;for(const p of platforms)this.recovery.stopPlatform(id,p);this.run(task,[...platforms]);break;}}
  scored(id){
-  const corpus=[...new Map(this.store.allItems().filter(i=>i.contentStatus!=='excluded'&&Date.now()-Date.parse(i.collectedAt)<90*86400000).map(i=>[i.platform+':'+i.sourceId,i]).reverse()).values()];
+  const corpus=selectScoringCorpus(this.store.allItems());
   const scored=scoreItems(corpus,{minSize:config.minCalibrationSize,weights:config.scoreWeights});const byKey=new Map(scored.map(i=>[i.platform+':'+i.sourceId,i.influence]));
   return this.store.items(id).map(i=>({...i,influence:byKey.get(i.platform+':'+i.sourceId)||null}));
  }
@@ -67,9 +68,12 @@ export class Engine{
      const blockedModal=await search.locator('.SignFlowModal:visible,.signFlowModal:visible,.login-container:visible,.login-modal:visible').count();
      let candidates=await visibleCandidates(search,platform,observer);
      if(!candidates.length&&blockedModal)throw Object.assign(new Error('搜索需要先完成平台登录'),{code:'login_required'});
-     const seen=new Set();let stale=0,explicitEnd=false;
-     for(let scroll=0;scroll<config.maxSearchScrolls&&!signal.aborted;scroll++){
-      candidates=await visibleCandidates(search,platform,observer);stage.discovered=new Set(candidates.map(c=>c.id)).size;stage.status='collecting';this.save(task);
+     const seen=new Set(),discovered=new Set(),visitedPages=new Set();let stale=0,explicitEnd=false,searchPage=1,scansOnPage=0,stopReason='';
+     const maxPages=platform==='toutiao'?Math.max(1,config.maxSearchPages??20):1;
+     const maxScans=(config.maxSearchScrolls??6)*maxPages;
+     for(let scroll=0;scroll<maxScans&&!signal.aborted;scroll++){
+      candidates=await visibleCandidates(search,platform,observer);for(const c of candidates)discovered.add(c.id);stage.discovered=discovered.size;stage.status='collecting';if(platform==='toutiao')stage.searchPage=searchPage;this.save(task);
+      if(platform==='toutiao')this.log(task,platform,`搜索第 ${searchPage} 页：识别 ${candidates.length} 条本平台候选，累计 ${discovered.size} 条`, 'info',{action:'search_page_scan',searchPage,candidates:candidates.length,discovered:discovered.size});
       const fresh=candidates.filter(c=>!seen.has(c.id));
       for(const c of fresh){
        seen.add(c.id);if(signal.aborted||stage.accepted>=task.target)break;
@@ -81,6 +85,7 @@ export class Engine{
         await readDetail(opened,this.browser,{signal,log:uiLog});
         let item=await extractDetail(detail,platform,opened.candidate,this.browser,{alreadyOpened:true,openedObserver:opened.observer});
         item.navigationEvidence={mode:opened.mode,method:'visible_result_click',returnedBy:opened.mode==='inline'?'inline_list':opened.popup?'close_tab':platform==='xiaohongshu'?'top_left_close':'close_or_browser_back'};
+        if(platform==='toutiao')item.navigationEvidence.searchPage=searchPage;
         if(signal.aborted)throw new Error('STOP_REQUESTED');
         const capture=await this.evidence(detail,task,platform,c.id);item.evidence=capture;
         if(item.kind==='video'){
@@ -113,13 +118,20 @@ export class Engine{
        stage.status='collecting';this.save(task);if(stage.accepted>=task.target)break;await pace(search,'action',signal,uiLog);
       }
       if(stage.accepted>=task.target)break;
+      if(platform==='toutiao'){
+       if(searchPage>=maxPages){stopReason=`本轮达到 ${maxPages} 页扫描上限，未证明搜索全量结束`;break;}
+       const next=await advanceToutiaoResults(search,this.browser,{keyword:task.keyword,signal,log:uiLog,visited:visitedPages});
+       if(next.advanced){searchPage++;scansOnPage=0;stale=0;stage.searchPage=searchPage;stage.message=`已翻至搜索第 ${searchPage} 页，继续补足 ${stage.accepted}/${task.target} 条`;this.save(task);continue;}
+       if(next.reason==='next_disabled'){explicitEnd=true;stopReason='页面下一页已禁用';break;}
+       scansOnPage++;if(scansOnPage>=(config.maxSearchScrolls??6)){stopReason='本页扫描结束，未找到可用下一页，未证明搜索全量结束';break;}
+      }
       const body=await search.locator('body').innerText();explicitEnd=/没有更多(内容|结果)|暂无搜索结果|未找到相关(内容|结果)|没有找到相关/.test(body);
       if(explicitEnd)break;if(!fresh.length)stale++;else stale=0;if(stale>=2)break;
       await search.mouse.move(800,650);await search.mouse.wheel(0,600+Math.floor(Math.random()*350));uiLog('滚动搜索结果列表',{action:'scroll_results'});await pace(search,'scroll',signal,uiLog);await this.browser.gate(search);
      }
      if(signal.aborted){stage.status='stopped';stage.message='已停止，已保存内容可继续';}
      else if(stage.accepted>=task.target){stage.status='completed';stage.message=`达到目标，完整主体内容 ${stage.accepted}/${task.target} 条`;}
-     else{stage.status=stage.accepted||previous.size?'partial':'no_results';stage.message=`${explicitEnd?'页面显示搜索结束':'本次扫描结束，未证明搜索全量结束'}；完整正文 ${stage.accepted}/${task.target}，待补主体 ${stage.pendingContent}，详情失败 ${stage.failedDetails}`;}
+     else{stage.status=stage.accepted||previous.size?'partial':'no_results';stage.message=`${stopReason||(explicitEnd?'页面显示搜索结束':'本次扫描结束，未证明搜索全量结束')}；完整正文 ${stage.accepted}/${task.target}，待补主体 ${stage.pendingContent}，详情失败 ${stage.failedDetails}`;}
      signal.removeEventListener('abort',onAbort);
     }catch(e){
      stage.status=signal.aborted?'stopped':e.code||'failed';if(!terminalStates.includes(stage.status))stage.status='failed';stage.message=signal.aborted?'用户已停止':e.message;
