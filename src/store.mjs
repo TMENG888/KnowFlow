@@ -10,7 +10,8 @@ export class Store{
    CREATE TABLE IF NOT EXISTS protection(platform TEXT PRIMARY KEY,payload TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS detail_job(task_id TEXT,platform TEXT,source_id TEXT,payload TEXT NOT NULL,PRIMARY KEY(task_id,platform,source_id));
    CREATE TABLE IF NOT EXISTS creation(id TEXT PRIMARY KEY,created_at TEXT,payload TEXT NOT NULL);
-   CREATE TABLE IF NOT EXISTS embedding(model TEXT,hash TEXT,vector TEXT NOT NULL,PRIMARY KEY(model,hash));`);
+   CREATE TABLE IF NOT EXISTS embedding(model TEXT,hash TEXT,vector TEXT NOT NULL,PRIMARY KEY(model,hash));
+   CREATE TABLE IF NOT EXISTS reference_candidate(task_id TEXT,platform TEXT,source_id TEXT,payload TEXT NOT NULL,PRIMARY KEY(task_id,platform,source_id));`);
  }
  saveTask(t){this.db.prepare('INSERT INTO task VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(t.id,t.createdAt,JSON.stringify(t));return t;}
  tasks(){return this.db.prepare('SELECT payload FROM task ORDER BY created_at DESC LIMIT 100').all().map(r=>JSON.parse(r.payload));}
@@ -31,4 +32,7 @@ export class Store{
  creations(){return this.db.prepare('SELECT payload FROM creation ORDER BY created_at DESC LIMIT 100').all().map(r=>JSON.parse(r.payload));}
  embedding(model,hash){const row=this.db.prepare('SELECT vector FROM embedding WHERE model=? AND hash=?').get(model,hash);return row?JSON.parse(row.vector):null;}
  saveEmbedding(model,hash,vector){this.db.prepare('INSERT OR REPLACE INTO embedding VALUES(?,?,?)').run(model,hash,JSON.stringify(vector));}
+ referenceCandidates(taskId){return this.db.prepare('SELECT payload FROM reference_candidate WHERE task_id=? ORDER BY rowid DESC').all(taskId).map(r=>JSON.parse(r.payload));}
+ saveReferenceCandidate(c){this.db.prepare('INSERT OR IGNORE INTO reference_candidate VALUES(?,?,?,?)').run(c.taskId,c.platform,c.sourceId,JSON.stringify(c));}
+ removeReferenceCandidate(taskId,platform,sourceId){this.db.prepare('DELETE FROM reference_candidate WHERE task_id=? AND platform=? AND source_id=?').run(taskId,platform,sourceId);}
 }

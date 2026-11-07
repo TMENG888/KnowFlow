@@ -32,13 +32,18 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'&&p==='/api/creation-settings'){const input=await body(req,4000);return send(res,200,await creation.provider.configure(String(input.key||'')));}
   if(req.method==='GET'&&p==='/api/creations')return send(res,200,{jobs:creation.list(),active:creation.active});
   if(req.method==='GET'&&p==='/api/creation-reference')return send(res,200,creation.recommend(url.searchParams.get('taskId')));
+  if(req.method==='GET'&&p==='/api/reference-candidates')return send(res,200,{candidates:creation.candidates(url.searchParams.get('taskId'))});
+  if(req.method==='POST'&&p==='/api/reference-candidates')return send(res,200,creation.candidate(await body(req,2000)));
   if(req.method==='POST'&&p==='/api/creations')return send(res,201,creation.publicJob(creation.create(await body(req,10000)).id));
-  const creationRoute=p.match(/^\/api\/creations\/([a-f\d-]{36})(?:\/(prepare|generate|stop|save|export))?$/);
+  const creationRoute=p.match(/^\/api\/creations\/([a-f\d-]{36})(?:\/(prepare|generate|stop|save|export|review|section|history|analyze))?$/);
   if(creationRoute){const [,id,action]=creationRoute;
    if(req.method==='GET'&&!action)return send(res,200,creation.publicJob(id));
-   if(req.method==='POST'&&['prepare','generate'].includes(action))return send(res,200,creation.start(id,action));
+   if(req.method==='POST'&&['prepare','generate','analyze'].includes(action))return send(res,200,creation.start(id,action));
    if(req.method==='POST'&&action==='stop')return send(res,200,creation.stop(id));
    if(req.method==='POST'&&action==='save')return send(res,200,creation.publicJob(creation.save(id,(await body(req)).draft).id));
+   if(req.method==='POST'&&action==='review')return send(res,200,creation.review(id,await body(req,12000)));
+   if(req.method==='POST'&&action==='section'){const input=await body(req,2000);return send(res,200,creation.startSection(id,input.sectionId,input.action));}
+   if(req.method==='GET'&&action==='history')return send(res,200,creation.history(id,url.searchParams.get('index')));
    if(req.method==='GET'&&action==='export')return url.searchParams.get('format')==='json'?send(res,200,creation.publicJob(id),{'Content-Disposition':'attachment; filename="creation-sources.json"'}):send(res,200,creation.export(id),{'Content-Type':'text/markdown; charset=utf-8','Content-Disposition':'attachment; filename="knowflow-draft.md"'});
   }
   if(req.method==='GET'&&p==='/api/discovery')return send(res,200,discovery.list());
@@ -102,7 +107,7 @@ const server=http.createServer(async(req,res)=>{
    const rel=decodeURIComponent(p.slice(11)),target=path.resolve(config.outputDir,rel);if(!target.startsWith(path.resolve(config.outputDir)+path.sep)||!rel.startsWith('tasks/')||!['.png','.wav','.json'].includes(path.extname(target)))return send(res,403,{error:'文件不可访问'});
    const bytes=await fs.readFile(target);res.writeHead(200,{'Content-Type':mime[path.extname(target)],'X-Content-Type-Options':'nosniff'});return res.end(bytes);
   }
-  if(req.method==='GET'&&['/','/app.js','/style.css','/workflow.js','/workflow.css'].includes(p)){
+  if(req.method==='GET'&&['/','/app.js','/style.css','/workflow.js','/workflow.css','/creation-canvas-model.js','/creation-canvas.js','/creation-canvas.css'].includes(p)){
    const file=path.join(ROOT,'public',p==='/'?'index.html':p.slice(1));const bytes=await fs.readFile(file);
    res.writeHead(200,{'Content-Type':mime[path.extname(file)],'Cache-Control':'no-cache','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});return res.end(bytes);
   }
