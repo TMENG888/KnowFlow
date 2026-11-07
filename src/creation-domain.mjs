@@ -41,8 +41,14 @@ export function retrieve(query,candidates,{topK=5,minSimilarity=.45}={}){
  const seen=new Set(),bySource=new Map();return candidates.map(c=>({...c,similarity:cosine(query,c.vector)})).filter(c=>c.similarity>=minSimilarity).sort((a,b)=>b.similarity-a.similarity).filter(c=>{if(seen.has(c.hash)||(bySource.get(c.sourceKey)||0)>=2)return false;seen.add(c.hash);bySource.set(c.sourceKey,(bySource.get(c.sourceKey)||0)+1);return true;}).slice(0,topK).map(({vector,...c})=>c);
 }
 export function validateDraft(text,evidence){
- const cited=[...text.matchAll(/\[(C\d+)\]/g)].map(m=>m[1]),allowed=new Set(evidence.map(e=>e.citation));
+ const cited=[...text.matchAll(/\[([CR]\d+)\]/g)].map(m=>m[1]),allowed=new Set(evidence.map(e=>e.citation));
  if(text.length<80||!cited.length||cited.some(id=>!allowed.has(id)))throw new Error('草稿缺少有效来源引用或引用不在召回证据中，未保存该段');
  return text;
 }
-export function markdown(job){const sources=new Map();for(const s of job.sections||[])for(const e of s.evidence||[])sources.set(e.citation,e);return (job.draft||'')+'\n\n---\n\n## 参考来源\n\n'+[...sources].map(([id,e])=>`- [${id}] ${e.title}（${e.platform}） ${e.url} · 分块 ${e.start}—${e.end}`).join('\n')+'\n\n> AI 辅助创作草稿，请核对事实、引用和表述后发布。\n';}
+export function cleanSectionDraft(text,heading){return text.split(/\r?\n/).filter(line=>!/^#{1,6}\s+/.test(line)||normalize(line.replace(/^#{1,6}\s+/,''))!==normalize(heading)).join('\n').replace(/\n{3,}/g,'\n\n').trim();}
+export function referenceEvidence(job,section){
+ let cursor=0;const spans=new Map();for(const p of job.paragraphs){const start=job.reference.text.indexOf(p.text,cursor);if(start<0)throw new Error('参考段落与原文快照不一致');const end=start+p.text.length;spans.set(p.id,{start,end});cursor=end;}
+ const chosen=section.paragraphIds.map(id=>job.paragraphs.find(p=>p.id===id));if(chosen.some(p=>!p))throw new Error('参考段落编号无效');
+ return{citation:'R'+section.id,role:'reference',sourceKey:job.reference.key,title:job.reference.title,url:job.reference.url,platform:job.reference.platform,paragraphIds:section.paragraphIds,text:chosen.map(p=>p.text).join('\n'),start:spans.get(chosen[0].id).start,end:spans.get(chosen.at(-1).id).end};
+}
+export function markdown(job){const sources=new Map(),used=new Set([...(job.draft||'').matchAll(/\[([CR]\d+)\]/g)].map(m=>m[1]));for(const s of job.sections||[])for(const e of [...(s.referenceEvidence||[]),...(s.evidence||[])])if(used.has(e.citation))sources.set(e.citation,e);return (job.draft||'')+'\n\n---\n\n## 参考来源\n\n'+[...sources].map(([id,e])=>`- [${id}] ${e.title}（${e.platform}） ${e.url} · ${e.role==='reference'?'参考原文段落 '+e.paragraphIds.join('、')+' · ':''}分块 ${e.start}—${e.end}`).join('\n')+'\n\n> AI 辅助创作草稿，请核对事实、引用和表述后发布。\n';}
