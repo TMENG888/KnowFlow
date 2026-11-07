@@ -8,7 +8,9 @@ export class Store{
    CREATE TABLE IF NOT EXISTS item(task_id TEXT,platform TEXT,source_id TEXT,payload TEXT NOT NULL,PRIMARY KEY(task_id,platform,source_id));
    CREATE TABLE IF NOT EXISTS event(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,at TEXT,payload TEXT);
    CREATE TABLE IF NOT EXISTS protection(platform TEXT PRIMARY KEY,payload TEXT NOT NULL);
-   CREATE TABLE IF NOT EXISTS detail_job(task_id TEXT,platform TEXT,source_id TEXT,payload TEXT NOT NULL,PRIMARY KEY(task_id,platform,source_id));`);
+   CREATE TABLE IF NOT EXISTS detail_job(task_id TEXT,platform TEXT,source_id TEXT,payload TEXT NOT NULL,PRIMARY KEY(task_id,platform,source_id));
+   CREATE TABLE IF NOT EXISTS creation(id TEXT PRIMARY KEY,created_at TEXT,payload TEXT NOT NULL);
+   CREATE TABLE IF NOT EXISTS embedding(model TEXT,hash TEXT,vector TEXT NOT NULL,PRIMARY KEY(model,hash));`);
  }
  saveTask(t){this.db.prepare('INSERT INTO task VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(t.id,t.createdAt,JSON.stringify(t));return t;}
  tasks(){return this.db.prepare('SELECT payload FROM task ORDER BY created_at DESC LIMIT 100').all().map(r=>JSON.parse(r.payload));}
@@ -24,4 +26,9 @@ export class Store{
  detailJobs(taskId,platform='zhihu'){return this.db.prepare('SELECT payload FROM detail_job WHERE task_id=? AND platform=? ORDER BY rowid').all(taskId,platform).map(r=>JSON.parse(r.payload));}
  saveDetailJob(taskId,job){this.db.prepare('UPDATE detail_job SET payload=? WHERE task_id=? AND platform=? AND source_id=?').run(JSON.stringify(job),taskId,job.platform,job.sourceId);}
  close(){this.db.close();}
+ saveCreation(job){job.updatedAt=new Date().toISOString();this.db.prepare('INSERT INTO creation VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(job.id,job.createdAt,JSON.stringify(job));return job;}
+ creation(id){const row=this.db.prepare('SELECT payload FROM creation WHERE id=?').get(id);return row?JSON.parse(row.payload):null;}
+ creations(){return this.db.prepare('SELECT payload FROM creation ORDER BY created_at DESC LIMIT 100').all().map(r=>JSON.parse(r.payload));}
+ embedding(model,hash){const row=this.db.prepare('SELECT vector FROM embedding WHERE model=? AND hash=?').get(model,hash);return row?JSON.parse(row.vector):null;}
+ saveEmbedding(model,hash,vector){this.db.prepare('INSERT OR REPLACE INTO embedding VALUES(?,?,?)').run(model,hash,JSON.stringify(vector));}
 }

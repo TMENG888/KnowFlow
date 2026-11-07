@@ -8,7 +8,7 @@ export function loadSettings(root=ROOT){
  const localPath=path.join(root,'settings.local.json');
  const local=fs.existsSync(localPath)?JSON.parse(fs.readFileSync(localPath,'utf8')):{};
  const settings={...defaults,...local};
- for(const key of ['outputDir','profileDir','tempDir','zhihuListProfileDir','zhihuDetailProfileDir','asrModel','pythonSite','playwrightFallback'])if(settings[key])settings[key]=path.resolve(root,settings[key]);
+ for(const key of ['outputDir','profileDir','tempDir','zhihuListProfileDir','zhihuDetailProfileDir','asrModel','pythonSite','playwrightFallback','embeddingModel','embeddingPython','discoveryDataDir','discoveryWorkDir'])if(settings[key])settings[key]=path.resolve(root,settings[key]);
  return settings;
 }
 export const config=loadSettings();

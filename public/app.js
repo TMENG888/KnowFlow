@@ -13,7 +13,7 @@ function setup(){
  $('#platform-checks').innerHTML=Object.entries(names).map(([id,name])=>`<label class="platform-check"><input type="checkbox" name="platform" value="${id}" checked><span class="platform-mark" aria-hidden="true">${marks[id]}</span>${name}</label>`).join('');
  $('#filter-platform').innerHTML+=[...Object.entries(names)].map(([id,name])=>`<option value="${id}">${name}</option>`).join('');
  $('#task-form').addEventListener('change',()=>{$('#target-hint').textContent=`${$$('input[name="platform"]:checked').length} 个平台，目标 ${$$('input[name="platform"]:checked').length*Number($('#target').value)} 条完整内容`;});
- $('#task-form').addEventListener('submit',async e=>{e.preventDefault();$('#form-error').textContent='';$('#start').disabled=true;try{const result=await api('/api/tasks',{keyword:$('#keyword').value,target:Number($('#target').value),platforms:$$('input[name="platform"]:checked').map(n=>n.value),transcribeVideos:$('#transcribe').checked});selected=result.id;await refresh();toast('任务已创建，内容将逐条保存');}catch(err){$('#form-error').textContent=err.message;$('#start').disabled=!!state.running;}});
+ $('#task-form').addEventListener('submit',async e=>{e.preventDefault();$('#form-error').textContent='';$('#start').disabled=true;try{const result=await api('/api/tasks',{keyword:$('#keyword').value,target:Number($('#target').value),platforms:$$('input[name="platform"]:checked').map(n=>n.value),transcribeVideos:$('#transcribe').checked,...(window.KnowFlowWorkflow?.origin()?{topicOrigin:window.KnowFlowWorkflow.origin()}:{})});selected=result.id;await refresh();toast('任务已创建，内容将逐条保存');}catch(err){$('#form-error').textContent=err.message;$('#start').disabled=!!state.running;}});
  $('#retry').onclick=async()=>{try{await api(`/api/tasks/${selected}/retry`,{});await refresh();toast('已从保存的断点继续');}catch(e){toast(e.message);}};
  $('#stop').onclick=async()=>{try{await api(`/api/tasks/${selected}/stop`,{});toast('已请求安全停止，已保存内容会保留');await refresh();}catch(e){toast(e.message);}};
  for(const s of ['#content-search','#filter-platform','#filter-kind','#sort'])$(s).addEventListener('input',renderItems);
@@ -24,7 +24,7 @@ function setup(){
  $('#content-list').onclick=e=>{const button=e.target.closest('[data-item]');if(button)showDetail(items.find(i=>i.platform+':'+i.sourceId===button.dataset.item));};
 }
 document.addEventListener("click",async e=>{const b=e.target.closest("[data-refresh]");if(!b)return;b.disabled=true;try{const r=await api("/api/platforms/"+b.dataset.refresh+"/refresh",{});toast(r.message);}catch(err){toast(err.message);}finally{b.disabled=false;}});
-function changeView(view){currentView=view;for(const v of $$('.view'))v.classList.toggle('hidden',v.id!==view);$('#results').classList.toggle('hidden',!['workspace','library'].includes(view));for(const n of $$('.nav')){n.classList.toggle('active',n.dataset.view===view);n.setAttribute('aria-current',n.dataset.view===view?'page':'false');}$('#breadcrumb').textContent='工作台 / '+({workspace:'采集任务',library:'内容库',method:'影响力口径',guide:'使用说明'}[view]);}
+function changeView(view){currentView=view;window.KnowFlowWorkflow?.view(view);for(const v of $$('.view'))v.classList.toggle('hidden',v.id!==view);$('#results').classList.toggle('hidden',!['workspace','library'].includes(view));for(const n of $$('.nav')){n.classList.toggle('active',n.dataset.view===view);n.setAttribute('aria-current',n.dataset.view===view?'page':'false');}$('#breadcrumb').textContent='工作台 / '+({workspace:'采集任务',library:'内容库',method:'影响力口径',guide:'使用说明',discovery:'发现选题',creation:'文章创作'}[view]);}
 async function refresh(){
  if(polling)return;polling=true;
  try{state=await api('/api/state');$('#connection').textContent='本机服务已连接';if(!selected&&state.tasks.length)selected=state.tasks[0].id;
@@ -39,7 +39,7 @@ function render(){
  $('#pipeline').innerHTML=Object.entries(names).map(([id,name])=>{const s=task?.stages.find(s=>s.platform===id);return`<article class="platform-stage"><div class="stage-name"><strong>${name}</strong><span class="platform-mark" aria-hidden="true">${marks[id]}</span></div><div class="stage-count">${s?fmt(s.accepted):'—'} <small>${s?'/ '+s.target+' 条':task?'未纳入':'待选择'}</small></div><div><span class="status ${statusClass(s?.status)}">${esc(s?statusNames[s.status]||s.status:task?'未加入本任务':'尚未选择')}</span></div>${s?.listStatus?`<p class="meta">列表：${esc(statusNames[s.listStatus]||s.listStatus)} · 详情：${esc(statusNames[s.detailStatus]||s.detailStatus)}<br>待处理链接 ${s.queuedDetails||0} 条 · 会话独立</p>`:``}<p class="stage-message">${esc(s?.message||(task?'当前任务未选择该平台；继续未完成平台不会启动它。需要采集时，请新建任务并勾选该平台。':'可先准备登录；创建任务时勾选该平台后开始采集。'))}${s?.evidence?` <a href="/artifacts/${esc(s.evidence)}" target="_blank" rel="noopener">查看证据</a>`:''}</p><button type="button" data-login="${id}">${id==='zhihu'?'打开列表登录':'打开登录'}</button><button type="button" data-refresh="${id}">${id==='zhihu'?'刷新未登录详情一次':'刷新当前页一次'}</button></article>`;}).join('');
  $('#event-count').textContent=events.length?'('+events.length+')':'';$('#events').innerHTML=events.length?events.map(e=>`<div class="event ${esc(e.level)}"><time>${esc(date(e.at).split(' ').at(-1))}</time><span>${esc((names[e.platform]||'任务')+'：'+e.message)}</span></div>`).join(''):'<p class="muted">创建任务后显示执行日志。</p>';
  for(const format of ['json','csv']){const link=$('#export-'+format);link.classList.toggle('disabled',!task);link.setAttribute('aria-disabled',String(!task));if(task)link.href=`/api/tasks/${task.id}/export?format=${format}`;}
- renderItems();
+ renderItems();window.KnowFlowWorkflow?.context({selected,task,items,state});
 }
 function renderItems(){
  const q=$('#content-search').value.toLowerCase(),p=$('#filter-platform').value,k=$('#filter-kind').value,sort=$('#sort').value;
@@ -57,6 +57,7 @@ function showDetail(i){if(!i)return;$('#detail-platform').textContent=names[i.pl
  $('#detail-body h2').before(resources);
  resources.querySelector('#copy-video')?.addEventListener('click',()=>navigator.clipboard.writeText(i.videoUrl).then(()=>toast('已复制视频媒体链接'),()=>toast('复制失败，可打开链接后复制地址')));
  resources.querySelector('#copy-images')?.addEventListener('click',()=>navigator.clipboard.writeText((i.imageUrls||i.images).join('\n')).then(()=>toast('已复制全部图片链接'),()=>toast('复制失败，可在导出文件中查看链接')));
+ const create=document.createElement('button');create.className='primary';create.textContent='以此文作为创作框架';create.disabled=i.contentStatus!=='completed';create.onclick=()=>{$('#detail').close();window.KnowFlowWorkflow?.selectReference(i);};$('#detail-body h1').after(create);
  $('#detail').showModal();
 }
 setup();refresh();setInterval(()=>{if(!document.hidden)refresh();},2500);

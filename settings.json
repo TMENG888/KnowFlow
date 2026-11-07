@@ -54,5 +54,9 @@
   "zhihuListProfileDir": "E:/Codex/work/knowflow/private/zhihu-list-profile",
   "zhihuDetailExecutablePath": "C:/Program Files/Google/Chrome/Application/chrome.exe",
   "zhihuDetailProfileDir": "E:/Codex/work/knowflow/private/zhihu-detail-profile",
-  "maxSearchPages": 20
+  "maxSearchPages": 20,
+  "embeddingModel": "E:/Codex/work/knowflow/models/bge-small-zh-v1.5",
+  "embeddingPython": "",
+  "discoveryDataDir": "E:/Codex/outputs/knowflow/discovery",
+  "discoveryWorkDir": "E:/Codex/work/knowflow/private/discovery"
 }

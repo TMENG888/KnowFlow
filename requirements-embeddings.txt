@@ -1,0 +1,5 @@
+# Offline BAAI/bge-small-zh-v1.5 inference; CPU is sufficient.
+torch>=2.6
+transformers>=4.51,<5
+numpy>=1.26
+safetensors>=0.4

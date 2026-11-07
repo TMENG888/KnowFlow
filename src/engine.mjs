@@ -25,7 +25,7 @@ export class Engine{
   const keyword=String(input.keyword||'').trim();if(!keyword||keyword.length>200)throw new Error('检索词须为1—200个字符');
   const platforms=[...new Set(input.platforms||[])];if(!platforms.length||platforms.some(p=>!PLATFORMS[p]))throw new Error('请选择有效平台');
   const target=Number(input.target??3);if(!Number.isInteger(target)||target<1||target>100)throw new Error('每平台目标量须为1—100条');
-  return{keyword,platforms,target,transcribeVideos:input.transcribeVideos!==false,autoResumeAfterLogin:input.autoResumeAfterLogin!==false};
+  return{keyword,platforms,target,transcribeVideos:input.transcribeVideos!==false,autoResumeAfterLogin:input.autoResumeAfterLogin!==false,...(input.topicOrigin?{topicOrigin:input.topicOrigin}:{})};
  }
  create(input){
   if(this.running)throw new Error('已有任务正在采集，请等待或先安全停止');

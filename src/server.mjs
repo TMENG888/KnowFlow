@@ -7,6 +7,8 @@ import {Engine} from './engine.mjs';
 import {SCORING_VERSION} from './scoring.mjs';
 import {canonical} from './domain.mjs';
 import {extractDetail} from './adapters.mjs';
+import {CreationService} from './creation.mjs';
+import {DiscoveryService} from './discovery-service.mjs';
 const lockPath=path.join(ROOT,'data','server.lock');let lock;
 try{lock=await fs.open(lockPath,'wx');}catch(e){
  if(e.code!=='EEXIST')throw e;const old=JSON.parse(await fs.readFile(lockPath,'utf8'));let alive=false;try{process.kill(old.pid,0);alive=true;}catch{}
@@ -14,9 +16,10 @@ try{lock=await fs.open(lockPath,'wx');}catch(e){
 }
 await lock.writeFile(JSON.stringify({pid:process.pid,port:config.port}));await lock.close();
 const store=new Store(),engine=new Engine(store);engine.recover();
+const creation=new CreationService(store,{scored:id=>engine.scored(id)}),discovery=await new DiscoveryService().init();
 const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.png':'image/png','.json':'application/json; charset=utf-8','.wav':'audio/wav'};
 function send(res,status,data,headers={}){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...headers});res.end(typeof data==='string'?data:JSON.stringify(data));}
-async function body(req){let text='';for await(const chunk of req){text+=chunk;if(text.length>16000)throw new Error('请求过大');}return JSON.parse(text||'{}');}
+async function body(req,max=1000000){let size=0;const parts=[];for await(const chunk of req){size+=chunk.length;if(size>max)throw new Error('请求过大');parts.push(chunk);}try{return JSON.parse(Buffer.concat(parts).toString('utf8')||'{}');}catch{throw new Error('请求内容不是有效JSON');}}
 const csvCell=v=>{let s=v==null?'':String(v);if(/^[=+\-@\t\r]/.test(s))s="'"+s;return'"'+s.replaceAll('"','""')+'"';};
 const server=http.createServer(async(req,res)=>{
  try{
@@ -24,7 +27,33 @@ const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://127.0.0.1'),p=url.pathname;
   if(req.method!=='GET'&&req.headers.origin&&!['http://127.0.0.1:'+config.port,'http://localhost:'+config.port].includes(req.headers.origin))return send(res,403,{error:'禁止跨站操作'});
   if(req.method==='GET'&&p==='/api/state')return send(res,200,{platforms:Object.entries(PLATFORMS).map(([id,p])=>({id,name:p.name,protection:store.protection(id)})),tasks:store.tasks(),running:engine.running,asrPolicy:{model:'Qwen/Qwen3-ASR-0.6B',backend:config.asrBackend,device:config.asrDevice,chunkSeconds:config.asrChunkSeconds,timestampType:'audio_chunk'},scorePolicy:{version:SCORING_VERSION,scope:'all-platforms/all-types',missingPolicy:'fixed-weight-no-redistribution',weights:config.scoreWeights,minCalibrationSize:config.minCalibrationSize,windowDays:90},version:'0.1.0'});
-  if(req.method==='POST'&&p==='/api/tasks')return send(res,201,engine.create(await body(req)));
+  if(req.method==='POST'&&p==='/api/tasks'){const input=await body(req);if(input.topicOrigin){const origin=discovery.selection(input.topicOrigin.discoveryId,input.topicOrigin.nodeId);if(input.keyword!==origin.keyword)throw new Error('选题词已修改，请重新选择选题或清除关联');input.topicOrigin=origin;}return send(res,201,engine.create(input));}
+  if(req.method==='GET'&&p==='/api/creation-settings')return send(res,200,{configured:await creation.provider.configured(),model:creation.provider.model,embeddingModel:'BAAI/bge-small-zh-v1.5',localEmbedding:!!config.embeddingModel,scope:'task',active:creation.active});
+  if(req.method==='POST'&&p==='/api/creation-settings'){const input=await body(req,4000);return send(res,200,await creation.provider.configure(String(input.key||'')));}
+  if(req.method==='GET'&&p==='/api/creations')return send(res,200,{jobs:creation.list(),active:creation.active});
+  if(req.method==='GET'&&p==='/api/creation-reference')return send(res,200,creation.recommend(url.searchParams.get('taskId')));
+  if(req.method==='POST'&&p==='/api/creations')return send(res,201,creation.publicJob(creation.create(await body(req,10000)).id));
+  const creationRoute=p.match(/^\/api\/creations\/([a-f\d-]{36})(?:\/(prepare|generate|stop|save|export))?$/);
+  if(creationRoute){const [,id,action]=creationRoute;
+   if(req.method==='GET'&&!action)return send(res,200,creation.publicJob(id));
+   if(req.method==='POST'&&['prepare','generate'].includes(action))return send(res,200,creation.start(id,action));
+   if(req.method==='POST'&&action==='stop')return send(res,200,creation.stop(id));
+   if(req.method==='POST'&&action==='save')return send(res,200,creation.publicJob(creation.save(id,(await body(req)).draft).id));
+   if(req.method==='GET'&&action==='export')return url.searchParams.get('format')==='json'?send(res,200,creation.publicJob(id),{'Content-Disposition':'attachment; filename="creation-sources.json"'}):send(res,200,creation.export(id),{'Content-Type':'text/markdown; charset=utf-8','Content-Disposition':'attachment; filename="knowflow-draft.md"'});
+  }
+  if(req.method==='GET'&&p==='/api/discovery')return send(res,200,discovery.list());
+  if(req.method==='POST'&&p==='/api/discovery')return send(res,201,await discovery.jobs.create(await body(req,12000)));
+  if(req.method==='POST'&&p==='/api/discovery/import')return send(res,201,await discovery.jobs.import(await body(req,24000000)));
+  if(req.method==='POST'&&p==='/api/discovery/import-legacy')return send(res,200,await discovery.importLegacy());
+  if(req.method==='POST'&&p==='/api/discovery/browser'){const input=await body(req,2000);return send(res,200,input.close?await discovery.jobs.closeSession()||{closed:true}:await discovery.jobs.openSession(input.platform));}
+  const discoveryRoute=p.match(/^\/api\/discovery\/([a-f\d-]{36})(?:\/(start|pause|continue|edit|selection|files\/.+))?$/);
+  if(discoveryRoute){const [,id,action]=discoveryRoute;
+   if(req.method==='GET'&&!action)return send(res,200,discovery.get(id));
+   if(req.method==='POST'&&['start','pause','continue'].includes(action))return send(res,200,discovery.jobs[action](id));
+   if(req.method==='POST'&&action==='edit')return send(res,200,await discovery.jobs.update(id,await body(req,12000)));
+   if(req.method==='POST'&&action==='selection')return send(res,200,discovery.selection(id,(await body(req,2000)).nodeId));
+   if(req.method==='GET'&&action?.startsWith('files/')){const name=decodeURIComponent(action.slice(6)),bytes=await discovery.file(id,name),html=name==='mindmap.html';res.writeHead(200,{'Content-Type':html?'text/html; charset=utf-8':name.endsWith('.csv')?'text/csv; charset=utf-8':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...(html?{'Content-Security-Policy':"sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:"}:{'Content-Disposition':"attachment; filename*=UTF-8''"+encodeURIComponent(name)})});return res.end(bytes);}
+  }
   const taskRoute=p.match(/^\/api\/tasks\/([a-f\d-]+)(?:\/(retry|stop|export))?$/);
   if(taskRoute){const [,id,action]=taskRoute;const task=store.task(id);if(!task)return send(res,404,{error:'任务不存在'});
    if(req.method==='POST'&&action==='retry')return send(res,200,engine.retry(id,await body(req)));
@@ -73,7 +102,7 @@ const server=http.createServer(async(req,res)=>{
    const rel=decodeURIComponent(p.slice(11)),target=path.resolve(config.outputDir,rel);if(!target.startsWith(path.resolve(config.outputDir)+path.sep)||!rel.startsWith('tasks/')||!['.png','.wav','.json'].includes(path.extname(target)))return send(res,403,{error:'文件不可访问'});
    const bytes=await fs.readFile(target);res.writeHead(200,{'Content-Type':mime[path.extname(target)],'X-Content-Type-Options':'nosniff'});return res.end(bytes);
   }
-  if(req.method==='GET'&&['/','/app.js','/style.css'].includes(p)){
+  if(req.method==='GET'&&['/','/app.js','/style.css','/workflow.js','/workflow.css'].includes(p)){
    const file=path.join(ROOT,'public',p==='/'?'index.html':p.slice(1));const bytes=await fs.readFile(file);
    res.writeHead(200,{'Content-Type':mime[path.extname(file)],'Cache-Control':'no-cache','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});return res.end(bytes);
   }
@@ -83,4 +112,4 @@ const server=http.createServer(async(req,res)=>{
 server.listen(config.port,config.host,()=>console.log(`知流 KnowFlow http://${config.host}:${config.port}`));
 server.on('error',e=>{console.error(e.message);fs.unlink(lockPath).catch(()=>{});process.exit(1);});
 process.on('exit',()=>{try{import('node:fs').then(fs=>fs.unlinkSync(lockPath));}catch{}});
-for(const sig of ['SIGINT','SIGTERM'])process.on(sig,()=>{if(engine.running)engine.stop(engine.running);server.close();fs.unlink(lockPath).finally(()=>process.exit(0));});
+for(const sig of ['SIGINT','SIGTERM'])process.on(sig,async()=>{if(engine.running)engine.stop(engine.running);if(creation.active)creation.stop(creation.active);await discovery.jobs.shutdown();server.close();fs.unlink(lockPath).finally(()=>process.exit(0));});
