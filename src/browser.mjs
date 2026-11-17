@@ -5,11 +5,26 @@ export async function publicBilibiliPlayback(page){
  if(!/^https:\/\/www\.bilibili\.com\/video\/BV[0-9A-Za-z]{10}\//.test(page.url()))return false;
  return page.evaluate(()=>{const v=window.__INITIAL_STATE__?.videoData,p=window.__playinfo__?.data;const part=Number(new URL(location.href).searchParams.get('p')||1);const duration=v?.pages?.find(p=>Number(p.page)===part)?.duration;const player=document.querySelector('video');return!!v&&!!p&&!p.is_preview&&!p.isPreview&&!v.rights?.pay&&!v.is_upower_exclusive&&duration>0&&player?.readyState>=1&&player.duration>=duration-3;}).catch(()=>false);
 }
+const BILIBILI_LOGIN_CLOSE='.bili-mini-close-icon:visible,.bili-mini-login-wrapper button[aria-label="关闭"]:visible';
+const bilibiliLoginGuards=new WeakMap();
+function bilibiliContentPage(page){try{return ['www.bilibili.com','search.bilibili.com'].includes(new URL(page.url()).hostname);}catch{return false;}}
+function bilibiliLoginState(page){let state=bilibiliLoginGuards.get(page);if(!state){state={closing:false,installed:false,log:()=>{}};bilibiliLoginGuards.set(page,state);}return state;}
 export async function dismissOptionalBilibiliLogin(page){
- const publicResults=/^https:\/\/search\.bilibili\.com\//.test(page.url())&&await page.locator('.bili-video-card:visible,.video-list .video-item:visible').count()>0;
- if(!publicResults&&!await publicBilibiliPlayback(page))return false;
- const close=page.locator('.bili-mini-close-icon:visible').first();if(!await close.count())return false;
- await close.click({timeout:8000});await page.waitForTimeout(400);return true;
+ if(!bilibiliContentPage(page))return false;
+ const state=bilibiliLoginState(page);if(state.closing)return false;
+ const close=page.locator(BILIBILI_LOGIN_CLOSE).first();if(!await close.count())return false;
+ if(await page.locator('.geetest_panel:visible,.geetest_panel_box:visible,.geetest_holder:visible,.bili-captcha:visible,iframe[src*="captcha"]:visible').count())throw new AccessError({code:'verification_required',message:'B站显示安全验证，请在保留的页面人工处理'});
+ // Closing the site's optional dialog must not depend on video readiness: the
+ // dialog itself may pause loading. Access and full-content checks follow it.
+ state.closing=true;
+ try{await close.click({timeout:4000});await close.waitFor({state:'hidden',timeout:2000});state.log('已点击B站登录弹窗关闭按钮',{action:'dismiss_optional_login',platform:'bilibili'});return true;}
+ catch(e){if(e instanceof AccessError)throw e;throw new AccessError({code:'login_required',message:'B站登录弹窗未能正常关闭，请在保留的页面人工处理'});}
+ finally{state.closing=false;}
+}
+export async function ensureOptionalBilibiliLoginGuard(page,{log}={}){
+ if(!bilibiliContentPage(page)||typeof page.addLocatorHandler!=='function')return;
+ const state=bilibiliLoginState(page);if(log)state.log=log;if(state.installed)return;
+ await page.addLocatorHandler(page.locator(BILIBILI_LOGIN_CLOSE).first(),async()=>{if(!state.closing)await dismissOptionalBilibiliLogin(page);},{noWaitAfter:true});state.installed=true;
 }
 export function zhihuBrowserOptions(role,settings=config){
  const options={headless:settings.headless,downloadsPath:settings.tempDir};
@@ -27,6 +42,13 @@ export async function dismissOptionalZhihuLogin(page){
  if(!await content.count()||(await content.innerText().catch(()=>'')).trim().length<25)return false;
  const close=page.locator('.Modal-wrapper:has(.SignFlowModal) button.Modal-closeButton:visible,.Modal-wrapper:has(.signFlowModal) button.Modal-closeButton:visible,.SignFlowModal button[aria-label="关闭"]:visible,.signFlowModal button[aria-label="关闭"]:visible').first();
  if(!await close.count())return false;await close.click({timeout:8000});await page.waitForTimeout(400);return !await modal.count();
+}
+export async function dismissOptionalXiaohongshuLogin(page){
+ if(!/^https:\/\/www\.xiaohongshu\.com\//.test(page.url()))return false;
+ // Only close the site's dismissible prompt when a public note/list is present.
+ if(!await page.locator('#noteContainer,.note-container,.note-item').count())return false;
+ const close=page.locator('.login-container .close-button:visible').first();if(!await close.count())return false;
+ await close.click({timeout:4000});await close.waitFor({state:'hidden',timeout:2000});return true;
 }
 export class BrowserManager{
  constructor({chromium=null,settings=config}={}){this.chromium=chromium;this.settings=settings;this.browser=null;this.context=null;this.connecting=null;this.loginPages=new Map();this.navigations=new WeakMap();}
@@ -94,15 +116,17 @@ export class BrowserManager{
   })();try{return await this.zhihuOpening;}finally{this.zhihuOpening=null;}
  }
  async gate(page,status=200){
-  if(status<400)await dismissOptionalBilibiliLogin(page);
+  if(status<400){await ensureOptionalBilibiliLoginGuard(page);await dismissOptionalBilibiliLogin(page);}
   const snapshot={url:page.url(),title:await page.title(),text:await page.locator('body').innerText({timeout:8000}).catch(()=>''),status};
   const classify=async()=>{
    let text=snapshot.text;
+   if(bilibiliContentPage(page))for(const prompt of await page.locator('.bpx-player-video-inputbar:visible,.reply-box-login:visible').allInnerTexts())if(prompt.trim())text=text.replace(prompt,'');
    if(/^https:\/\/(?:www|zhuanlan)\.zhihu\.com\/(?:p\/\d+|question\/\d+\/answer\/\d+)/.test(snapshot.url)&&await page.locator('.Post-RichTextContainer,.AnswerItem .RichContent-inner').count())text=text.replace(/请您登录后查看更多专业优质内容[。！!]?/g,'');
    if(await publicBilibiliPlayback(page))text=text.replace(/请先登录或注册/g,'');
    return classifyAccess({...snapshot,text});
   };
   let issue=await classify();if(issue&&issue.code!=='login_required')throw new AccessError(issue);
+  if(await dismissOptionalXiaohongshuLogin(page)){snapshot.text=await page.locator('body').innerText();issue=await classify();}
   if(await dismissOptionalZhihuLogin(page)){snapshot.text=await page.locator('body').innerText();issue=await classify();}
   if(issue)throw new AccessError(issue);
   if(await page.locator('.passport-login-container:visible iframe[src*="passport.csdn.net/account/login"],.SignFlowModal:visible,.signFlowModal:visible,.login-container:visible,.login-modal:visible,.bili-mini-close-icon:visible').count())throw new AccessError({code:'login_required',message:'平台显示登录窗口，请在保留的浏览器页面完成登录'});return snapshot;

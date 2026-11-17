@@ -12,12 +12,12 @@ export function bilibiliItem({candidate,video,playback={},dom={}}){
  const videoUrls=[...new Set([...(playback.dash?.video||[]).flatMap(v=>[v.baseUrl,v.base_url,...(v.backupUrl||v.backup_url||[])]),...progressive.flatMap(v=>[v.url,...(v.backup_url||[])])].map(url).filter(Boolean))];
  // A multipart progressive response must not be mistaken for a whole video.
  const mediaUrl=audioUrls[0]||(progressive.length===1?url(progressive[0].url):null);
- const stat=video.stat||{},images=[...new Set([video.pic,...(dom.images||[])].map(url).filter(Boolean))];
+ const stat=video.stat||{},images=[...new Set((dom.images||[]).map(url).filter(Boolean))],coverUrls=[...new Set([video.pic,...(candidate.coverUrls||[])].map(url).filter(Boolean))];
  const collectedAt=new Date().toISOString();
  const item={platform:'bilibili',sourceId:source.id,bvid:source.bvid,cid:String(part.cid),part:source.part,
   url:source.url,title:video.title||dom.title||'',partTitle:part.part||null,
   body:dom.description||video.desc||'',author:video.owner?.name||null,
-  publishedAt:video.pubdate?new Date(video.pubdate*1000).toISOString():null,kind:'video',images,imageUrls:images,
+  publishedAt:video.pubdate?new Date(video.pubdate*1000).toISOString():null,kind:'video',images,imageUrls:images,coverUrls,coverUrl:coverUrls[0]||null,coverSource:'video_metadata_pic',
   durationSeconds:Number(part.duration)||null,mediaUrl,audioUrls,asrMediaKind:audioUrls.length?'audio':'video',
   videoUrls,videoUrl:videoUrls[0]||null,videoUrlMayExpire:videoUrls.length>0,resourceLinksObservedAt:collectedAt,
   metrics:{likes:parseCount(stat.like),comments:parseCount(stat.reply),favorites:parseCount(stat.favorite),shares:parseCount(stat.share),views:parseCount(stat.view)},

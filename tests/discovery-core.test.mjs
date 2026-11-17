@@ -95,7 +95,7 @@ test("optional login popup closes with a normal UI click; real restrictions rema
     assert.equal(await dismissLoginPopup(page), 1);
     await page.locator("#search").click();
     await page.setContent(
-      '<div id="login-full-panel-test"><div class="YoNA2Hyj" onclick="this.parentElement.remove()"><svg width="37" height="36"></svg></div>扫码登录</div>',
+      '<div id="login-full-panel-test"><div id="douyin_login_comp_flat_panel_header"><div>扫码登录</div><div class="new-hash" onclick="document.getElementById(\'login-full-panel-test\').remove()"><svg width="37" height="36"></svg></div></div></div>',
     );
     assert.equal(await dismissLoginPopup(page), 1);
     await page.setContent(
@@ -110,6 +110,22 @@ test("optional login popup closes with a normal UI click; real restrictions rema
   } finally {
     await browser.close();
   }
+});
+
+test("login detection uses stable header or semantic login content and preserves unrelated dialogs", async () => {
+  const {chromium}=await loadPlaywright(),browser=await chromium.launch({channel:'msedge',headless:true});
+  try {
+    const page=await browser.newPage();
+    await page.setContent(`<input id="search"><div style="width:0;height:0"><div style="position:fixed;inset:0;background:white"><div id="douyin_login_comp_flat_panel_header"><div>登录后免费畅享高清视频</div><div class="random-header-control" onclick="this.parentElement.parentElement.remove()"><svg width="37" height="36"></svg></div></div></div></div>`);
+    await assert.rejects(assertAccess(page),/登录弹窗阻挡/);
+    assert.equal(await dismissLoginPopup(page),1);await page.locator('#search').click({timeout:1000});
+    await page.setContent(`<input id="search"><div role="dialog" style="position:fixed;inset:0;background:white">扫码登录<button aria-label="关闭" onclick="this.parentElement.remove()">×</button></div>`);
+    assert.equal(await dismissLoginPopup(page),1);await assertAccess(page);
+    await page.setContent(`<div role="dialog">下载客户端<button aria-label="关闭" onclick="window.unrelatedClosed=true">×</button></div>`);
+    assert.equal(await dismissLoginPopup(page),0);assert.equal(await page.evaluate(()=>!!window.unrelatedClosed),false);
+    await page.setContent(`<div role="dialog">扫码登录<button aria-label="关闭" onclick="window.loginClosed=true">×</button><iframe src="about:blank" class="captcha-verify"></iframe></div>`);
+    await assert.rejects(dismissLoginPopup(page),/验证/);assert.equal(await page.evaluate(()=>!!window.loginClosed),false);
+  } finally {await browser.close();}
 });
 test("login recovery waits for delayed controls and disappearance, ignores transparent ancestors", async () => {
   const { chromium } = await loadPlaywright();

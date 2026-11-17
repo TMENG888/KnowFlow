@@ -58,5 +58,10 @@
   "embeddingModel": "E:/Codex/work/knowflow/models/bge-small-zh-v1.5",
   "embeddingPython": "",
   "discoveryDataDir": "E:/Codex/outputs/knowflow/discovery",
-  "discoveryWorkDir": "E:/Codex/work/knowflow/private/discovery"
+  "discoveryWorkDir": "E:/Codex/work/knowflow/private/discovery",
+  "doubaoProfileDir": "E:/Codex/work/knowflow/private/doubao-illustration-profile",
+  "doubaoCdpEndpoint": "",
+  "illustrationTimeoutMs": 600000,
+  "illustrationStylePreset": "author-graphrag",
+  "illustrationModel": "Seedream 5.5"
 }

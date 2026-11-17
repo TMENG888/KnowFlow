@@ -21,11 +21,12 @@ export class KnowledgeService{
   for(const [index,b] of k.blocks.entries()){
    if(b.type!=='image'||['completed','decorative'].includes(b.status)||!retry&&['failed','unreadable'].includes(b.status))continue;if(signal?.aborted)throw new Error('图片处理已暂停，已识别结果和原文保留');
    b.status='processing';delete b.error;finalizeKnowledge(k);this.persist(taskId,item);onProgress('识别图片：'+item.title+' · '+b.id);
-   const operation=async()=>{if(signal?.aborted)throw new Error('操作已停止');const {bytes,mime}=await this.download(b.url,{signal,sourceURL:item.url}),hash=createHash('sha256').update(bytes).digest('hex'),cacheKey=this.provider.model+':vision-v1:'+hash;let result=this.store.imageDescription(cacheKey);
-    if(!result){const textBefore=k.blocks.slice(0,index).filter(x=>x.type!=='image').at(-1)?.text||'',textAfter=k.blocks.slice(index+1).find(x=>x.type!=='image')?.text||'';result=await this.provider.describeImage({bytes,mime,context:{articleTitle:item.title,alt:b.alt||'',textBefore:textBefore.slice(-700),textAfter:textAfter.slice(0,700),position:b.placement}},{signal});if(signal?.aborted)throw new Error('操作已停止');this.store.saveImageDescription(cacheKey,result);}return {...result,contentHash:hash};};
+   const operation=async()=>{if(signal?.aborted)throw new Error('操作已停止');const {bytes,mime}=await this.download(b.url,{signal,sourceURL:item.url}),hash=createHash('sha256').update(bytes).digest('hex'),cacheKey=this.provider.model+':vision-v2:'+hash;let result=this.store.imageDescription(cacheKey)||this.store.imageDescription(this.provider.model+':vision-v1:'+hash);
+    if(!result){const textBefore=k.blocks.slice(0,index).filter(x=>x.type!=='image').at(-1)?.text||'',textAfter=k.blocks.slice(index+1).find(x=>x.type!=='image')?.text||'';result=await this.provider.describeImage({bytes,mime,context:{articleTitle:item.title,alt:b.alt||'',textBefore:textBefore.slice(-700),textAfter:textAfter.slice(0,700),position:b.placement}},{signal});if(signal?.aborted)throw new Error('操作已停止');}
+    const {extractedText,...information}=result;this.store.saveImageDescription(cacheKey,information);return {...information,contentHash:hash};};
    try{const run=this.imageWork.then(operation);this.imageWork=run.catch(()=>{});Object.assign(b,await run);}
    catch(e){b.status=signal?.aborted?'pending':'failed';b.error=e.message;}
-   finalizeKnowledge(k);this.persist(taskId,item);if(signal?.aborted)throw new Error('图片处理已暂停，已识别结果和原文保留');if(/^DeepSeek HTTP (401|402|429)/.test(b.error||''))throw new Error('图片识别已暂停：'+b.error);
+   finalizeKnowledge(k);this.persist(taskId,item);if(signal?.aborted)throw new Error('图片处理已暂停，已识别结果和原文保留');if(/^DeepSeek HTTP (401|402|429)|未配置可用的本机 DeepSeek 密钥|本机 DeepSeek 凭据读取失败/.test(b.error||''))throw new Error('图片识别已暂停：'+b.error);
   }return item;
  }
 }

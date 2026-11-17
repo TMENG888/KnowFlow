@@ -1,11 +1,13 @@
 import {createHash} from 'node:crypto';
+import {readingArticle} from '../public/article-policy.mjs';
+import {illustratedDraft} from '../public/illustration-document.mjs';
 import {prepareKnowledge} from './content-cleaning.mjs';
 export const hash=s=>createHash('sha256').update(s).digest('hex');
 export const normalize=s=>String(s||'').replace(/\s+/g,' ').trim();
 export const textOf=i=>prepareKnowledge(i).text;
 export const sourceKey=i=>i.platform+':'+i.sourceId;
 export function articleStructure(item){
- const text=textOf(item),lines=text.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+ const k=prepareKnowledge(item),text=k.text,lines=k.paragraphs.filter(p=>p.type!=='image').map(p=>p.text);
  const headings=[...new Set(lines.filter(s=>s.length>=3&&s.length<=90&&!/扫码|领取|免费分享|免费领取/.test(s)&&/^(?:#{1,6}\s+|第[一二三四五六七八九十百\d]+[章节部分]|[一二三四五六七八九十]+[、．.：:]|[（(][一二三四五六七八九十\d]+[）)]|\d+(?:\.\d+)*[、．.：:]\s*|(?:核心概念|工作原理|架构设计|总结|实现步骤|适用场景|优缺点)[：:]?\s*$)/.test(s)))];
  return {eligible:item.contentStatus==='completed'&&item.kind!=='video'&&text.length>=600&&lines.length>=6&&headings.length>=2,bodyChars:text.length,paragraphCount:lines.length,headingCount:headings.length,headings:headings.slice(0,12),method:'visible-headings-and-paragraphs-v1'};
 }
@@ -18,6 +20,12 @@ export function paragraphs(text){
  const out=[];for(const raw of text.split(/\n+/)){let s=raw.trim();while(s.length>800){let end=Math.max(s.lastIndexOf('。',800),s.lastIndexOf('！',800),s.lastIndexOf('？',800));if(end<200)end=799;out.push(s.slice(0,end+1));s=s.slice(end+1).trim();}if(s)out.push(s);}
  const pieces=out.length===1?out[0].split(/(?<=[。！？])/).filter(s=>s.trim()):out;
  return pieces.map((text,i)=>({id:i+1,text}));
+}
+export function articleParagraphs(item){
+ const k=prepareKnowledge(item);
+ // Reintroduce boundaries only for outlining; each paragraph remains an exact
+ // substring of the continuous knowledge text for citation offset validation.
+ return paragraphs(k.paragraphs.map(p=>p.text).join('\n'));
 }
 export function chunks(text,max=360,overlap=50){
  const out=[];for(let start=0;start<text.length;){let end=Math.min(start+max,text.length);if(end<text.length){const candidate=Math.max(text.lastIndexOf('。',end-1),text.lastIndexOf('\n',end-1));if(candidate>start+max/2)end=candidate+1;}const content=text.slice(start,end).trim();if(content.length>=40)out.push({start,end,text:content,hash:hash(normalize(content))});if(end===text.length)break;start=Math.max(start+1,end-overlap);}
@@ -41,9 +49,9 @@ export function cosine(a,b){if(a.length!==b.length||!a.length)throw new Error('�
 export function retrieve(query,candidates,{topK=5,minSimilarity=.45}={}){
  const seen=new Set(),bySource=new Map();return candidates.map(c=>({...c,similarity:cosine(query,c.vector)})).filter(c=>c.similarity>=minSimilarity).sort((a,b)=>b.similarity-a.similarity).filter(c=>{if(seen.has(c.hash)||(bySource.get(c.sourceKey)||0)>=2)return false;seen.add(c.hash);bySource.set(c.sourceKey,(bySource.get(c.sourceKey)||0)+1);return true;}).slice(0,topK).map(({vector,...c})=>c);
 }
-export function validateDraft(text,evidence){
+export function validateDraft(text,evidence,{minCharacters=80}={}){
  const cited=[...text.matchAll(/\[([CR]\d+)\]/g)].map(m=>m[1]),allowed=new Set(evidence.map(e=>e.citation));
- if(text.length<80||!cited.length||cited.some(id=>!allowed.has(id)))throw new Error('草稿缺少有效来源引用或引用不在召回证据中，未保存该段');
+ if(text.length<minCharacters||!cited.length||cited.some(id=>!allowed.has(id)))throw new Error('草稿缺少有效来源引用或引用不在召回证据中，未保存该段');
  return text;
 }
 export function cleanSectionDraft(text,heading){return text.split(/\r?\n/).filter(line=>!/^#{1,6}\s+/.test(line)||normalize(line.replace(/^#{1,6}\s+/,''))!==normalize(heading)).join('\n').replace(/\n{3,}/g,'\n\n').trim();}
@@ -52,4 +60,4 @@ export function referenceEvidence(job,section){
  const chosen=section.paragraphIds.map(id=>job.paragraphs.find(p=>p.id===id));if(chosen.some(p=>!p))throw new Error('参考段落编号无效');
  return{citation:'R'+section.id,role:'reference',sourceKey:job.reference.key,title:job.reference.title,url:job.reference.url,platform:job.reference.platform,paragraphIds:section.paragraphIds,text:chosen.map(p=>p.text).join('\n'),start:spans.get(chosen[0].id).start,end:spans.get(chosen.at(-1).id).end};
 }
-export function markdown(job){const sources=new Map(),used=new Set([...(job.draft||'').matchAll(/\[([CR]\d+)\]/g)].map(m=>m[1]));for(const s of job.sections||[])for(const e of [...(s.priorEvidence||[]),...(s.referenceEvidence||[]),...(s.evidence||[])])if(used.has(e.citation))sources.set(e.citation,e);return (job.draft||'')+'\n\n---\n\n## 参考来源\n\n'+[...sources].map(([id,e])=>`- [${id}] ${e.title}（${e.platform}） ${e.url} · ${e.role==='reference'?'参考原文段落 '+e.paragraphIds.join('、')+' · ':''}分块 ${e.start}—${e.end}`).join('\n')+'\n\n> AI 辅助创作草稿，请核对事实、引用和表述后发布。\n';}
+export function markdown(job){const sources=new Map(),used=new Set([...(job.draft||'').matchAll(/\[([CR]\d+)\]/g)].map(m=>m[1]));for(const s of job.sections||[])for(const e of [...(s.priorEvidence||[]),...(s.referenceEvidence||[]),...(s.evidence||[])])if(used.has(e.citation))sources.set(e.citation,e);return readingArticle(illustratedDraft(job.draft||'',job.sections||[]))+'\n\n---\n\n参考来源\n\n'+[...sources].map(([id,e])=>`- [${id}] ${e.title}（${e.platform}） ${e.url} · ${e.role==='reference'?'参考原文段落 '+e.paragraphIds.join('、')+' · ':''}分块 ${e.start}—${e.end}`).join('\n')+'\n\n> AI 辅助创作草稿，请核对事实、引用和表述后发布。\n';}

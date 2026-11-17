@@ -2,7 +2,7 @@ import {randomInt} from 'node:crypto';
 import {createHash} from 'node:crypto';
 import {canonical} from './domain.mjs';
 import {config,PLATFORMS} from './config.mjs';
-import {Observer} from './browser.mjs';
+import {Observer,ensureOptionalBilibiliLoginGuard} from './browser.mjs';
 import {douyinSearchCards,DOUYIN_FEED} from './douyin-ui.mjs';
 export const DEFAULT_PACING={action:[1500,3200],read:[2500,4800],scroll:[1100,2300],key:[40,110]};
 export function randomDelayRange(kind,policy=config.pacing||DEFAULT_PACING){const pair=policy[kind]||DEFAULT_PACING[kind]||DEFAULT_PACING.action;const low=Math.max(0,Math.floor(pair[0])),high=Math.max(low,Math.floor(pair[1]));return randomInt(low,high+1);}
@@ -47,8 +47,8 @@ export async function visibleCandidates(page,platform,observer){
  await observer.flush();
  if(platform==='douyin'){for(let attempt=0;attempt<12;attempt++){const inline=await douyinSearchCards(page);if(inline.length)return inline;if(!await page.locator('.search-result-card').count())break;await page.waitForTimeout(500);}}
  const selector=platform==='bilibili'?'.bili-video-card a[href],.video-list .video-item a[href],.video-list-item a[href]':platform==='toutiao'?'.cs-header a[href]':platform==='zhihu'?'.Search-container .List-item .ContentItem-title a[href],.SearchResult-Card .ContentItem-title a[href]':'a[href]';
- const links=await page.locator(selector).evaluateAll((ns,platform)=>ns.map(n=>{const card=platform==='bilibili'?n.closest('.bili-video-card,.video-item,.video-list-item'):null;return{url:n.href,title:(card?.querySelector('h3,h2')?.getAttribute('title')||card?.querySelector('h3,h2')?.innerText||n.innerText)?.trim().slice(0,250)||'',visible:!!n.getClientRects().length,summary:(card||n.closest('section,.SearchResult-Card,.search-result-card,.csdn-tracking-statistics,.note-item,.cs-card-content'))?.innerText?.slice(0,900)||''};}).filter(n=>n.visible),platform);
- const map=new Map();for(const link of links){const c=canonical(platform,link.url);if(!c)continue;let found=map.get(c.id);if(!found)map.set(c.id,{...c,title:link.title,summary:link.summary,clickHref:link.url});else if(!found.title&&link.title){found.title=link.title;found.clickHref=link.url;}}
+ const links=await page.locator(selector).evaluateAll((ns,platform)=>ns.map(n=>{const selectors={bilibili:'.bili-video-card,.video-item,.video-list-item',toutiao:'.cs-card-content,.cs-view',zhihu:'.List-item,.SearchResult-Card',csdn:'.csdn-tracking-statistics,.search-item',xiaohongshu:'.note-item'};const card=n.closest(selectors[platform]||'section');const image=[...(card||n).querySelectorAll('img')].find(i=>!i.closest('.avatar,.author,.AuthorInfo')&&!/avatar|icon|logo/i.test(i.className+' '+i.src));const poster=image?.getAttribute('data-original')||image?.getAttribute('data-src')||image?.currentSrc||image?.src;return{coverUrls:poster?[poster]:[],url:n.href,title:(card?.querySelector('h3,h2')?.getAttribute('title')||card?.querySelector('h3,h2')?.innerText||n.innerText)?.trim().slice(0,250)||'',visible:!!n.getClientRects().length,summary:(card||n.closest('section,.SearchResult-Card,.search-result-card,.csdn-tracking-statistics,.note-item,.cs-card-content'))?.innerText?.slice(0,900)||''};}).filter(n=>n.visible),platform);
+ const map=new Map();for(const link of links){const c=canonical(platform,link.url);if(!c)continue;let found=map.get(c.id);if(!found)map.set(c.id,{...c,title:link.title,summary:link.summary,coverUrls:link.coverUrls,clickHref:link.url});else {if(!found.coverUrls?.length&&link.coverUrls?.length)found.coverUrls=link.coverUrls;if(!found.title&&link.title){found.title=link.title;found.clickHref=link.url;}}}
  // IDs from unrelated home feeds or invisible response records never become
  // clickable candidates. A current rendered result card must exist.
  for(const candidate of map.values())candidate.raw=observer.entities.findLast(v=>String(v.bvid||v.aweme_id||v.noteId||v.note_id||v.id||'')===(candidate.bvid||candidate.id.replace(/^(answer|article)-/,'')));
@@ -59,6 +59,7 @@ export async function visibleCandidates(page,platform,observer){
  return[...map.values()].map(c=>platform==='zhihu'?{...c,resultScope:'primary_search_result'}:c);
 }
 export async function clickCandidate(search,platform,candidate,browser,{signal,log=()=>{}}={}){
+ if(platform==='bilibili')await ensureOptionalBilibiliLoginGuard(search,{log});
  await browser.gate(search);const beforeUrl=search.url();
  if(platform==='douyin'&&candidate.inlineCard){
   const node=search.locator(DOUYIN_FEED+`[data-e2e-vid="${candidate.id}"]`).first();
@@ -88,15 +89,21 @@ export async function clickCandidate(search,platform,candidate,browser,{signal,l
  if(!link)throw new Error('SEARCH_CARD_NOT_VISIBLE：当前结果中未找到该内容的可见链接，不拼接详情URL');
  await link.scrollIntoViewIfNeeded();const box=await link.boundingBox();if(box)await search.mouse.move(box.x+box.width/2,box.y+box.height/2);
  await pace(search,'action',signal,log);
+ if(platform==='bilibili')await browser.gate(search);
  const context=search.context(),sameObserver=new Observer(search,platform);let popup=null,popupObserver=null;
  const newPage=p=>{popup=p;popupObserver=new Observer(p,platform);};search.on('popup',newPage);
  try{
   let clickTarget=link;if(candidate.uiCard){const cover=link.locator('.videoImage').first(),bounds=await cover.boundingBox();if(bounds?.height>10)clickTarget=cover;}
+  // A short wait is not evidence that a target=_blank page has opened. Capture
+  // its event before clicking so a delayed popup cannot turn the search tab
+  // into the detail tab that returnToResults will subsequently close.
+  const popupReady=await link.getAttribute('target')==='_blank'?search.waitForEvent('popup',{timeout:config.navigationTimeoutMs}).catch(()=>null):null;
   await clickTarget.click({timeout:10000});log('点击搜索结果卡片',{action:'click_result',sourceId:candidate.id});await search.waitForTimeout(1800);
-  const page=popup||search;await page.waitForLoadState('domcontentloaded',{timeout:config.navigationTimeoutMs}).catch(()=>{});await browser.gate(page);await pace(page,'read',signal,log);
+  if(popupReady&&!await popupReady)throw new Error('SOURCE_ID_UNCONFIRMED：新详情页签未打开，保留搜索结果');
+  const page=popup||search;await page.waitForLoadState('domcontentloaded',{timeout:config.navigationTimeoutMs}).catch(()=>{});if(platform==='bilibili')await ensureOptionalBilibiliLoginGuard(page,{log});await browser.gate(page);await pace(page,'read',signal,log);
   let resolved=candidate;
   if(candidate.uiCard){let actual;for(let i=0;i<12;i++){actual=canonical(platform,page.url());if(actual&&(candidate.raw?actual.id===String(candidate.raw.aweme_id):actual.id!==canonical(platform,beforeUrl)?.id))break;actual=null;await page.waitForTimeout(500);}if(!actual)throw new Error('SOURCE_ID_UNCONFIRMED：卡片已点击但详情未确认真实来源ID，保留现场，停止该平台连续点击');resolved={...candidate,...actual};}
-  if(popup)sameObserver.close();return{page,observer:popupObserver||sameObserver,search,beforeUrl,platform,candidate:resolved,popup:!!popup,mode:popup?'new_tab':platform==='xiaohongshu'?'overlay':'same_tab'};
+  const isPopup=page!==search;if(isPopup)sameObserver.close();return{page,observer:isPopup?popupObserver:sameObserver,search,beforeUrl,platform,candidate:resolved,popup:isPopup,mode:isPopup?'new_tab':platform==='xiaohongshu'?'overlay':'same_tab'};
  }catch(e){sameObserver.close();popupObserver?.close();e.detailPage=popup||search;throw e;}finally{search.off('popup',newPage);}
 }
 export async function returnToResults(opened,browser,{signal,log=()=>{}}={}){

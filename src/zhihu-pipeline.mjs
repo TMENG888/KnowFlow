@@ -36,7 +36,7 @@ export async function collectZhihu(engine,task,stage,signal){
      if(seen.has(c.id))continue;seen.add(c.id);fresh++;
      const actual=canonical(platform,c.clickHref);if(!actual||actual.id!==c.id)continue;
      const prior=store.detailJobs(task.id).find(j=>j.sourceId===c.id);
-     const job={...prior,platform,sourceId:c.id,url:c.url,observedHref:c.clickHref,title:c.title,summary:c.summary,listUrl:search.url(),observedAt:new Date().toISOString(),resultScope:'primary_search_result',status:saved.get(c.id)?.contentStatus==='completed'?'completed':prior?.status==='scope_unverified'?'pending':prior?.status||'pending'};
+     const job={...prior,platform,sourceId:c.id,url:c.url,observedHref:c.clickHref,title:c.title,summary:c.summary,coverUrls:c.coverUrls,listUrl:search.url(),observedAt:new Date().toISOString(),resultScope:'primary_search_result',status:saved.get(c.id)?.contentStatus==='completed'?'completed':prior?.status==='scope_unverified'?'pending':prior?.status||'pending'};
      if(prior)store.saveDetailJob(task.id,job);else store.queueDetail(task.id,job);
     }
     stage.discovered=seen.size;stage.queuedDetails=queueCount();log('登录列表已保存真实详情链接：'+seen.size+' 条',{action:'queue_observed_links',channel:'list'});engine.save(task);
@@ -69,9 +69,10 @@ export async function collectZhihu(engine,task,stage,signal){
     // discard the user's recovery and issue an unnecessary new request.
     if(canonical(platform,detail.url())?.id===job.sourceId)await browser.gate(detail);else await browser.navigate(detail,job.observedHref);
     await readDetail({page:detail,platform},browser,{signal,log});
-    let item=await extractDetail(detail,platform,{id:job.sourceId,url:job.url,title:job.title,summary:job.summary},browser,{alreadyOpened:true,openedObserver:observer});
+    let item=await extractDetail(detail,platform,{id:job.sourceId,url:job.url,title:job.title,summary:job.summary,coverUrls:job.coverUrls},browser,{alreadyOpened:true,openedObserver:observer});
     item.navigationEvidence={method:'observed_result_link_handoff',mode:'isolated_context',listUrl:job.listUrl,observedHref:job.observedHref,observedAt:job.observedAt,resultScope:job.resultScope,listAuth:'separate_persistent_context',detailAuth:'anonymous_context',cookiesTransferred:false};
     item.evidence=await engine.evidence(detail,task,platform,job.sourceId);
+    await engine.collectionCovers?.capture(task.id,item,{signal});
     if(item.kind==='video'&&task.transcribeVideos)item=await engine.mediaSlots.run(()=>transcribe(item,task.id,{signal,onProgress:message=>{stage.message=message;engine.save(task);}}),signal);
     item.contentStatus=item.kind==='video'?(item.transcriptStatus==='completed'?'completed':'pending'):'completed';item.contentHash=contentHash(item.transcript||item.body);delete item.mediaUrl;delete item.captionTracks;delete item.captions;
      if(signal.aborted)throw new Error('STOP_REQUESTED');store.item(task.id,item);engine.knowledge?.enqueue(task.id,item);saved.set(item.sourceId,item);job.status=item.contentStatus==='completed'?'completed':'pending_content';job.finishedAt=new Date().toISOString();store.saveDetailJob(task.id,job);

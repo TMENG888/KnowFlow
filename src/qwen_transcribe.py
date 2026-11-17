@@ -113,6 +113,7 @@ def main():
     audio = decode_audio(args.input, args.max_seconds)
     duration = len(audio)/SAMPLE_RATE
     ranges = plan_chunks(audio, args.chunk_seconds)
+    print(json.dumps({'event':'audio_ready','durationSeconds':round(duration,3),'total':len(ranges)}),flush=True)
     wav = Path(args.output).with_suffix('.wav')
     wav.parent.mkdir(parents=True, exist_ok=True)
     pcm = (audio.clip(-1, 1) * 32768).clip(-32768, 32767).astype('<i2').tobytes()
@@ -136,9 +137,11 @@ def main():
     started = time.perf_counter()
     model = None
     if len(rows) < len(ranges):
+        print(json.dumps({'event':'model_loading','device':device,'model':MODEL_ID}),flush=True)
         model = Qwen3ASRModel.from_pretrained(str(Path(args.model)), dtype=dtype, device_map=device,
                     max_inference_batch_size=1, max_new_tokens=1024, attn_implementation='eager', local_files_only=True)
     for index in range(len(rows), len(ranges)):
+        print(json.dumps({'event':'chunk_started','chunk':index+1,'total':len(ranges)}),flush=True)
         start, end = ranges[index]
         clip = audio[start:end]
         if float(abs(clip).max()) < .00001:

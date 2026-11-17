@@ -1,3 +1,4 @@
+import {lengthBudget} from './creation-length.mjs';
 // Review actions are explicit human decisions, never automatic truth labels.
 export function sectionOf(job,id){const section=job.sections?.find(s=>s.id===Number(id));if(!section)throw new Error('章节不存在');return section;}
 export function patchSectionDraft(job,section,text){
@@ -26,8 +27,8 @@ export function snapshotDraft(job,section,reason){(job.draftHistory||=[]).push({
 export function eligibleEvidence(section,{reviewedOnly=false}={}){return [...(section.referenceEvidence||[]),...(section.evidence||[])].filter(e=>e.review!=='exclude'&&(!reviewedOnly||e.review==='keep'));}
 export function writingContext(job,section){
  const previous=job.sections.filter(s=>s.id<section.id).map(s=>{const marker='## '+s.heading+'\n',at=job.draft?.indexOf(marker);let text=s.draft||'';if(at>=0){const tail=job.draft.slice(at+marker.length),next=/\n## [^\n]+\n/.exec(tail);text=(next?tail.slice(0,next.index):tail).trim();}return {id:s.id,heading:s.heading,text};}).filter(s=>s.text);
- let remaining=12000;for(let n=previous.length-1;n>=0;n--){const t=previous[n].text;previous[n].text=remaining?t.slice(-remaining):'';previous[n].truncated=t.length>remaining;remaining=Math.max(0,remaining-previous[n].text.length);}
- return {articleTitle:job.outline.title,referenceWritingApproach:job.outline.referenceApproach||'尚未分析参考文章的论证思路；按已提供章节目的组织',newArticleApproach:job.outline.creationApproach||job.instructions||'',directory:job.sections.map(s=>({id:s.id,heading:s.heading,intent:s.intent,requirements:s.requirements||'',reviewNote:s.reviewNote||''})),section:{id:section.id,heading:section.heading,intent:section.intent,requirements:section.requirements||'',reviewNote:section.reviewNote||''},precedingSections:previous.filter(s=>s.text),contextPolicy:'前文仅用于衔接、去重和保持术语一致，不作为独立事实证据。若截断已标注；本节事实仍须由所附证据支持。'};
+ let remaining=3000;for(let n=previous.length-1;n>=0;n--){const t=previous[n].text;previous[n].text=remaining?t.slice(-remaining):'';previous[n].truncated=t.length>remaining;remaining=Math.max(0,remaining-previous[n].text.length);}
+ return {lengthBudget:lengthBudget(job,section),articleTitle:job.outline.title,referenceWritingApproach:job.outline.referenceApproach||'尚未分析参考文章的论证思路；按已提供章节目的组织',newArticleApproach:job.outline.creationApproach||job.instructions||'',directory:job.sections.map(s=>({id:s.id,heading:s.heading,intent:s.intent,requirements:s.requirements||'',reviewNote:s.reviewNote||''})),section:{id:section.id,heading:section.heading,intent:section.intent,requirements:section.requirements||'',reviewNote:section.reviewNote||''},precedingSections:previous.filter(s=>s.text),contextPolicy:'仅携带当前章节之前最近的最多3000字符正文，优先保留前一章末尾。前文仅用于衔接、去重和保持术语一致，不作为独立事实证据。若截断已标注；本节事实仍须由所附证据支持。'};
 }
 export function validateApproach(data,sections){
  if(!data||typeof data.referenceApproach!=='string'||!data.referenceApproach.trim()||typeof data.creationApproach!=='string'||!data.creationApproach.trim()||!Array.isArray(data.sections)||data.sections.length!==sections.length)throw new Error('写作思路或章节要求不完整，可重试');

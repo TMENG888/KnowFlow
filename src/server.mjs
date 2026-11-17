@@ -3,13 +3,27 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {config,ROOT,PLATFORMS} from './config.mjs';
 import {Store} from './store.mjs';
+import {PublishingService} from './publishing.mjs';
+import {DouyinPublisher} from './douyin-publisher.mjs';
+import {WechatPublisher} from './wechat-publisher.mjs';
 import {Engine} from './engine.mjs';
 import {SCORING_VERSION} from './scoring.mjs';
 import {canonical} from './domain.mjs';
 import {extractDetail} from './adapters.mjs';
 import {CreationService} from './creation.mjs';
+import {DeepSeekProvider} from './creation-provider.mjs';
+import {IllustrationService} from './illustrations.mjs';
+import {configuredIllustrationStyle} from './illustration-style.mjs';
+import {DoubaoBrowser} from './doubao-browser.mjs';
+import {PublicationCoverService} from './publication-cover.mjs';
+import {CoverResearchService,COVER_RESEARCH_VERSION} from './cover-research.mjs';
+import {COVER_REFERENCE_HYGIENE_VERSION} from './cover-visual.mjs';
+import {CreationTitlesService} from './creation-titles.mjs';
+import {CreationCoversService} from './creation-covers.mjs';
 import {DiscoveryService} from './discovery-service.mjs';
 import {KnowledgeService} from './knowledge.mjs';
+import {CollectionCoverService} from './collection-covers.mjs';
+import {CoverRecovery} from './cover-recovery.mjs';
 const lockPath=path.join(ROOT,'data','server.lock');let lock;
 try{lock=await fs.open(lockPath,'wx');}catch(e){
  if(e.code!=='EEXIST')throw e;const old=JSON.parse(await fs.readFile(lockPath,'utf8'));let alive=false;try{process.kill(old.pid,0);alive=true;}catch{}
@@ -17,9 +31,15 @@ try{lock=await fs.open(lockPath,'wx');}catch(e){
 }
 await lock.writeFile(JSON.stringify({pid:process.pid,port:config.port}));await lock.close();
 const store=new Store(),engine=new Engine(store);engine.recover();
+const collectionCovers=new CollectionCoverService(store);engine.collectionCovers=collectionCovers;store.onItem=(taskId,item)=>collectionCovers.enqueue(taskId,item);collectionCovers.backfill();
+const coverRecovery=new CoverRecovery(store,{browser:engine.browser,archive:collectionCovers,isBusy:()=>!!engine.running});
 const knowledge=new KnowledgeService(store);knowledge.cleanExisting();engine.knowledge=knowledge;
-const creation=new CreationService(store,{scored:id=>engine.scored(id),knowledge}),discovery=await new DiscoveryService().init();
-const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.png':'image/png','.json':'application/json; charset=utf-8','.wav':'audio/wav'};
+const illustrationBrowser=new DoubaoBrowser(),illustrations=new IllustrationService({provider:new DeepSeekProvider(),browser:illustrationBrowser});
+const creation=new CreationService(store,{scored:id=>engine.scored(id),knowledge,illustrations}),discovery=await new DiscoveryService().init();
+const publisherBrowser=new DouyinPublisher(),wechatPublisher=new WechatPublisher(),publicationCovers=new PublicationCoverService({provider:creation.provider,browser:illustrationBrowser}),publishing=new PublishingService(store,{creation,adapters:{douyin:publisherBrowser,wechat:wechatPublisher},covers:publicationCovers});
+const coverResearch=new CoverResearchService(store,{provider:creation.provider,scored:id=>engine.scored(id)}),creationCovers=new CreationCoversService({store,research:coverResearch,generator:publicationCovers,illustrations});
+creation.titles=new CreationTitlesService({store,provider:creation.provider,scored:id=>engine.scored(id)});creation.covers=creationCovers;publishing.creationCovers=creationCovers;publicationCovers.prepareContext=(record,ctx)=>creationCovers.context(record,ctx);
+const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.js':'text/javascript; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.json':'application/json; charset=utf-8','.wav':'audio/wav'};
 function send(res,status,data,headers={}){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...headers});res.end(typeof data==='string'?data:JSON.stringify(data));}
 async function body(req,max=1000000){let size=0;const parts=[];for await(const chunk of req){size+=chunk.length;if(size>max)throw new Error('请求过大');parts.push(chunk);}try{return JSON.parse(Buffer.concat(parts).toString('utf8')||'{}');}catch{throw new Error('请求内容不是有效JSON');}}
 const csvCell=v=>{let s=v==null?'':String(v);if(/^[=+\-@\t\r]/.test(s))s="'"+s;return'"'+s.replaceAll('"','""')+'"';};
@@ -28,21 +48,39 @@ const server=http.createServer(async(req,res)=>{
   if(req.headers.host!==`127.0.0.1:${config.port}`&&req.headers.host!==`localhost:${config.port}`)return send(res,403,{error:'无效主机'});
   const url=new URL(req.url,'http://127.0.0.1'),p=url.pathname;
   if(req.method!=='GET'&&req.headers.origin&&!['http://127.0.0.1:'+config.port,'http://localhost:'+config.port].includes(req.headers.origin))return send(res,403,{error:'禁止跨站操作'});
-  if(req.method==='GET'&&p==='/api/state')return send(res,200,{platforms:Object.entries(PLATFORMS).map(([id,p])=>({id,name:p.name,protection:store.protection(id)})),tasks:store.tasks(),running:engine.running,asrPolicy:{model:'Qwen/Qwen3-ASR-0.6B',backend:config.asrBackend,device:config.asrDevice,chunkSeconds:config.asrChunkSeconds,timestampType:'audio_chunk'},scorePolicy:{version:SCORING_VERSION,scope:'all-platforms/all-types',missingPolicy:'fixed-weight-no-redistribution',weights:config.scoreWeights,minCalibrationSize:config.minCalibrationSize,windowDays:90},version:'0.1.0'});
-  if(req.method==='POST'&&p==='/api/tasks'){const input=await body(req);if(input.topicOrigin){const origin=discovery.selection(input.topicOrigin.discoveryId,input.topicOrigin.nodeId);if(input.keyword!==origin.keyword)throw new Error('选题词已修改，请重新选择选题或清除关联');input.topicOrigin=origin;}return send(res,201,engine.create(input));}
-  if(req.method==='GET'&&p==='/api/creation-settings')return send(res,200,{configured:await creation.provider.configured(),model:creation.provider.model,embeddingModel:'BAAI/bge-small-zh-v1.5',localEmbedding:!!config.embeddingModel,scope:'task',active:creation.active});
+  if(req.method==='GET'&&p==='/api/state')return send(res,200,{platforms:Object.entries(PLATFORMS).map(([id,p])=>({id,name:p.name,protection:store.protection(id)})),tasks:store.tasks(),running:engine.running,asrPolicy:{model:'Qwen/Qwen3-ASR-0.6B',backend:config.asrBackend,device:config.asrDevice,chunkSeconds:config.asrChunkSeconds,timestampType:'audio_chunk'},scorePolicy:{version:SCORING_VERSION,scope:'all-platforms/all-types',missingPolicy:'fixed-weight-no-redistribution',weights:config.scoreWeights,minCalibrationSize:config.minCalibrationSize,windowDays:90},taskControls:{targetEdit:true,platformRetryWhileRunning:true,coverRecovery:true},version:'0.1.0'});
+  if(req.method==='POST'&&p==='/api/tasks'){if(coverRecovery.active)throw new Error('正在补取封面，请等待结束后采集');const input=await body(req);if(input.topicOrigin){const origin=discovery.selection(input.topicOrigin.discoveryId,input.topicOrigin.nodeId);if(input.keyword!==origin.keyword)throw new Error('选题词已修改，请重新选择选题或清除关联');input.topicOrigin=origin;}return send(res,201,engine.create(input));}
+  if(req.method==='GET'&&p==='/api/creation-settings'){const style=configuredIllustrationStyle(config);return send(res,200,{configured:await creation.provider.configured(),model:creation.provider.model,titles:{enabled:true,version:'ranked-ten-v1',referenceCount:10,scope:'task-global-ranking'},covers:{enabled:true,titlesEnabled:true,version:'ranked-five-reader-hook-v9',referenceHygieneVersion:COVER_REFERENCE_HYGIENE_VERSION,researchVersion:COVER_RESEARCH_VERSION,channels:['wechat','douyin'],referenceCount:5,scope:'task'},embeddingModel:'BAAI/bge-small-zh-v1.5',localEmbedding:!!config.embeddingModel,scope:'task',active:creation.active,illustrations:{version:'concise-v2',rulesVersion:'general-v3',automaticReview:false,validation:['file','dimensions'],enabled:true,provider:'doubao-ui',model:config.illustrationModel||'Seedream 5.5',styleSource:style?.source||'https://github.com/yang0/handraw-style',styleName:style?.name||'handraw-style'}});}
   if(req.method==='POST'&&p==='/api/creation-settings'){const input=await body(req,4000);return send(res,200,await creation.provider.configure(String(input.key||'')));}
+  const coverBackfill=p.match(/^\/api\/tasks\/([a-f\d-]{36})\/covers$/);if(req.method==='POST'&&coverBackfill){if(!store.task(coverBackfill[1]))throw new Error('任务不存在');return send(res,202,coverRecovery.start(coverBackfill[1]));}
+  if(req.method==='GET'&&p==='/api/publications/catalog')return send(res,200,{channels:publishing.catalog()});
+  if(req.method==='GET'&&p==='/api/publications')return send(res,200,{jobs:publishing.list(url.searchParams.get('creationId')),active:publishing.active});
+  if(req.method==='POST'&&p==='/api/publications/browser'){const input=await body(req,1000);return send(res,200,await(input.channel==='wechat'?wechatPublisher:publisherBrowser).open());}
+  if(req.method==='POST'&&p==='/api/publications')return send(res,201,await publishing.create(await body(req,4000)));
+  const publicationPreview=p.match(/^\/api\/creations\/([a-f\d-]{36})\/publication-(preview|tags)$/);
+  if(publicationPreview&&req.method==='GET'){const input={illustrationVersion:url.searchParams.get('version')||'current',coverMode:url.searchParams.get('coverMode')||'illustration',channel:url.searchParams.get('channel'),...(url.searchParams.has('title')?{title:url.searchParams.get('title')}:{})};return send(res,200,publicationPreview[2]==='tags'?await publishing.tags(publicationPreview[1],input):publishing.preview(publicationPreview[1],input));}
+  const coverRoute=p.match(/^\/api\/publications\/([a-f\d-]{36})\/cover$/);if(coverRoute&&req.method==='GET'){const image=await publishing.cover(coverRoute[1]);res.writeHead(200,{'Content-Type':image.mime,'Cache-Control':'private, max-age=3600'});return res.end(image.bytes);}
+  const publicationRoute=p.match(/^\/api\/publications\/([a-f\d-]{36})(?:\/(start|stop|preview))?$/);
+  const draftCopyRoute=p.match(/^\/api\/publications\/([a-f\d-]{36})\/draft-copy$/);if(draftCopyRoute&&req.method==='POST')return send(res,201,await publishing.draftCopy(draftCopyRoute[1]));
+  if(publicationRoute){const [,id,action]=publicationRoute;if(req.method==='GET'&&action==='preview')return send(res,200,publishing.snapshot(id));if(req.method==='GET'&&!action)return send(res,200,publishing.publicJob(id));if(req.method==='POST'&&action==='start')return send(res,200,publishing.start(id,await body(req,1000)));if(req.method==='POST'&&action==='stop')return send(res,200,publishing.stop(id));}
   if(req.method==='GET'&&p==='/api/creations')return send(res,200,{jobs:creation.list(),active:creation.active});
   const knowledgeRoute=p.match(/^\/api\/tasks\/([a-f\d-]{36})\/knowledge(?:\/(stop))?$/);
   if(knowledgeRoute){const taskId=knowledgeRoute[1];if(!store.task(taskId))throw new Error('采集任务不存在');if(req.method==='GET')return send(res,200,knowledge.summary(taskId));if(req.method==='POST')return send(res,200,knowledgeRoute[2]?knowledge.stop(taskId):knowledge.start(taskId,await body(req,2000)));}
   if(req.method==='GET'&&p==='/api/creation-reference')return send(res,200,creation.recommend(url.searchParams.get('taskId')));
   if(req.method==='GET'&&p==='/api/reference-candidates')return send(res,200,{candidates:creation.candidates(url.searchParams.get('taskId'))});
   if(req.method==='POST'&&p==='/api/reference-candidates')return send(res,200,creation.candidate(await body(req,2000)));
+  if(req.method==='POST'&&p==='/api/illustrations/browser')return send(res,200,await illustrationBrowser.open());
+  const imageRoute=p.match(/^\/api\/creations\/([a-f\d-]{36})\/illustrations\/([a-f\d-]{36})\/image$/);
+  if(req.method==='GET'&&imageRoute){const image=await illustrations.image(creation.get(imageRoute[1]),imageRoute[2]);res.writeHead(200,{'Content-Type':image.mime,'Cache-Control':'private, max-age=3600','X-Content-Type-Options':'nosniff'});return res.end(image.bytes);}
   if(req.method==='POST'&&p==='/api/creations')return send(res,201,creation.publicJob(creation.create(await body(req,10000)).id));
-  const creationRoute=p.match(/^\/api\/creations\/([a-f\d-]{36})(?:\/(prepare|generate|stop|save|export|review|section|history|analyze))?$/);
+  const coverCropRoute=p.match(/^\/api\/creations\/([a-f\d-]{36})\/covers\/(wechat|douyin)\/crop$/);
+  if(req.method==='POST'&&coverCropRoute){if(creation.active)throw new Error('创作运行中，请先完成或暂停后调整取景');return send(res,200,await creationCovers.reframe(creation.get(coverCropRoute[1]),coverCropRoute[2],await body(req,1000)));}
+  const creationCoverRoute=p.match(/^\/api\/creations\/([a-f\d-]{36})\/covers\/(wechat|douyin)\/(image|references\/S[1-5])$/);
+  if(req.method==='GET'&&creationCoverRoute){const [,id,channel,part]=creationCoverRoute,job=creation.get(id),result=part==='image'?await creationCovers.image(job,channel):await creationCovers.reference(job,channel,part.split('/')[1]);res.writeHead(200,{'Content-Type':result.mime,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});return res.end(result.bytes);}
+  const creationRoute=p.match(/^\/api\/creations\/([a-f\d-]{36})(?:\/(prepare|generate|stop|save|export|review|section|history|analyze|covers|titles))?$/);
   if(creationRoute){const [,id,action]=creationRoute;
    if(req.method==='GET'&&!action)return send(res,200,creation.publicJob(id));
-   if(req.method==='POST'&&['prepare','generate','analyze'].includes(action))return send(res,200,creation.start(id,action));
+   if(req.method==='POST'&&['prepare','generate','analyze','covers','titles'].includes(action))return send(res,200,creation.start(id,action,action==='covers'?await body(req,16000):{}));
    if(req.method==='POST'&&action==='stop')return send(res,200,creation.stop(id));
    if(req.method==='POST'&&action==='save')return send(res,200,creation.publicJob(creation.save(id,(await body(req)).draft).id));
    if(req.method==='POST'&&action==='review')return send(res,200,creation.review(id,await body(req,12000)));
@@ -63,18 +101,19 @@ const server=http.createServer(async(req,res)=>{
    if(req.method==='POST'&&action==='selection')return send(res,200,discovery.selection(id,(await body(req,2000)).nodeId));
    if(req.method==='GET'&&action?.startsWith('files/')){const name=decodeURIComponent(action.slice(6)),bytes=await discovery.file(id,name),html=name==='mindmap.html';res.writeHead(200,{'Content-Type':html?'text/html; charset=utf-8':name.endsWith('.csv')?'text/csv; charset=utf-8':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...(html?{'Content-Security-Policy':"sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:"}:{'Content-Disposition':"attachment; filename*=UTF-8''"+encodeURIComponent(name)})});return res.end(bytes);}
   }
-  const taskRoute=p.match(/^\/api\/tasks\/([a-f\d-]+)(?:\/(retry|stop|export))?$/);
+  const taskRoute=p.match(/^\/api\/tasks\/([a-f\d-]+)(?:\/(retry|stop|export|target))?$/);
   if(taskRoute){const [,id,action]=taskRoute;const task=store.task(id);if(!task)return send(res,404,{error:'任务不存在'});
-   if(req.method==='POST'&&action==='retry')return send(res,200,engine.retry(id,await body(req)));
+   if(req.method==='POST'&&action==='target')return send(res,200,engine.updateTarget(id,await body(req,2000)));
+   if(req.method==='POST'&&action==='retry'){if(coverRecovery.active)throw new Error('正在补取封面，请等待结束后继续采集');return send(res,200,engine.retry(id,await body(req)));}
    if(req.method==='POST'&&action==='stop')return send(res,200,engine.stop(id));
    if(req.method==='GET'&&action==='export'){
     const items=engine.scored(id);if(url.searchParams.get('format')==='csv'){
-     const fields=['platform','sourceId','title','url','kind','author','publishedAt','body','transcript','knowledge','contentBlocks','contentStatus','transcriptStatus','imageUrls','videoUrl','videoUrls','resourceLinksObservedAt','videoUrlMayExpire','audioUrls','transcriptModel','bvid','cid','part','partTitle','metricsExtra'];const rows=[fields.concat(['likes','comments','favorites','shares','views','influence','scoreProvisional','metricCoverage','influenceRank','influenceRankN','scoreVersion','scoredWeight','scoreComponents']).map(csvCell).join(',')];
+     const fields=['platform','sourceId','title','url','kind','author','publishedAt','body','transcript','knowledge','contentBlocks','contentStatus','transcriptStatus','coverUrl','coverUrls','coverSource','coverAssets','imageUrls','videoUrl','videoUrls','resourceLinksObservedAt','videoUrlMayExpire','audioUrls','transcriptModel','bvid','cid','part','partTitle','metricsExtra'];const rows=[fields.concat(['likes','comments','favorites','shares','views','influence','scoreProvisional','metricCoverage','influenceRank','influenceRankN','scoreVersion','scoredWeight','scoreComponents']).map(csvCell).join(',')];
      for(const i of items)rows.push([...fields.map(k=>i[k]!==null&&typeof i[k]==='object'?JSON.stringify(i[k]):i[k]),...['likes','comments','favorites','shares','views'].map(k=>i.metrics[k]),i.influence?.score,i.influence?.provisional,i.influence?.metricCoverage,i.influence?.rank,i.influence?.rankN,i.influence?.version,i.influence?.scoredWeight,JSON.stringify(i.influence?.components||{})].map(csvCell).join(','));
      return send(res,200,'\uFEFF'+rows.join('\r\n'),{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="content.csv"'});
     }return send(res,200,{task,items,events:store.events(id),detailQueue:store.detailJobs(id)},{'Content-Disposition':'attachment; filename="content.json"'});
    }
-   if(req.method==='GET'&&!action)return send(res,200,{task,items:engine.scored(id),knowledge:knowledge.summary(id),events:store.events(id),recovery:engine.recovery.status(id),detailQueue:store.detailJobs(id)});
+   if(req.method==='GET'&&!action)return send(res,200,{task,items:engine.scored(id),knowledge:knowledge.summary(id),coverRecovery:coverRecovery.active?.taskId===id?coverRecovery.active:coverRecovery.last?.taskId===id?coverRecovery.last:null,events:store.events(id),recovery:engine.recovery.status(id),detailQueue:store.detailJobs(id)});
   }
   if(req.method==='GET'&&p==='/api/platforms/zhihu/isolation'){
    const list=engine.browser.zhihuListPage,detail=engine.browser.zhihuDetailPage;
@@ -104,14 +143,14 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'&&login&&PLATFORMS[login[1]]){
    const platform=login[1];if(login[2]==='login')return send(res,200,await engine.browser.login(platform));
    const protection=store.protection(platform);if(protection?.until&&Date.now()<Date.parse(protection.until))throw new Error('仍在平台保护等待期，未刷新页面');
-   const stage=engine.running&&store.task(engine.running)?.stages.find(s=>s.platform===platform);if(stage&&['searching','collecting','transcribing'].includes(stage.status))throw new Error('该平台当前正在采集，请等待或安全停止后刷新');
+   const stage=engine.running&&store.task(engine.running)?.stages.find(s=>s.platform===platform);if(stage&&['searching','collecting','waiting_asr','transcribing'].includes(stage.status))throw new Error('该平台当前正在采集，请等待或安全停止后刷新');
    return send(res,200,await engine.browser.refresh(platform));
   }
   if(req.method==='GET'&&p.startsWith('/artifacts/')){
-   const rel=decodeURIComponent(p.slice(11)),target=path.resolve(config.outputDir,rel);if(!target.startsWith(path.resolve(config.outputDir)+path.sep)||!rel.startsWith('tasks/')||!['.png','.wav','.json'].includes(path.extname(target)))return send(res,403,{error:'文件不可访问'});
+   const rel=decodeURIComponent(p.slice(11)),target=path.resolve(config.outputDir,rel);if(!target.startsWith(path.resolve(config.outputDir)+path.sep)||!rel.startsWith('tasks/')||!['.png','.jpg','.jpeg','.webp','.gif','.wav','.json'].includes(path.extname(target)))return send(res,403,{error:'文件不可访问'});
    const bytes=await fs.readFile(target);res.writeHead(200,{'Content-Type':mime[path.extname(target)],'X-Content-Type-Options':'nosniff'});return res.end(bytes);
   }
-  if(req.method==='GET'&&['/','/app.js','/style.css','/workflow.js','/workflow.css','/creation-canvas-model.js','/creation-canvas.js','/creation-canvas.css'].includes(p)){
+  if(req.method==='GET'&&['/','/app.js','/style.css','/workflow.js','/creation-covers.js','/article-policy.mjs','/illustration-document.mjs','/workflow.css','/creation-canvas-model.js','/creation-canvas.js','/creation-canvas.css','/publishing.js','/publishing.css'].includes(p)){
    const file=path.join(ROOT,'public',p==='/'?'index.html':p.slice(1));const bytes=await fs.readFile(file);
    res.writeHead(200,{'Content-Type':mime[path.extname(file)],'Cache-Control':'no-cache','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});return res.end(bytes);
   }
@@ -121,4 +160,4 @@ const server=http.createServer(async(req,res)=>{
 server.listen(config.port,config.host,()=>console.log(`知流 KnowFlow http://${config.host}:${config.port}`));
 server.on('error',e=>{console.error(e.message);fs.unlink(lockPath).catch(()=>{});process.exit(1);});
 process.on('exit',()=>{try{import('node:fs').then(fs=>fs.unlinkSync(lockPath));}catch{}});
-for(const sig of ['SIGINT','SIGTERM'])process.on(sig,async()=>{if(engine.running)engine.stop(engine.running);if(creation.active)creation.stop(creation.active);for(const id of knowledge.tasks.keys())knowledge.stop(id);await discovery.jobs.shutdown();server.close();fs.unlink(lockPath).finally(()=>process.exit(0));});
+for(const sig of ['SIGINT','SIGTERM'])process.on(sig,async()=>{if(engine.running)engine.stop(engine.running);if(creation.active)creation.stop(creation.active);for(const id of knowledge.tasks.keys())knowledge.stop(id);await discovery.jobs.shutdown();await illustrationBrowser.close();if(publishing.active)publishing.stop(publishing.active);await publisherBrowser.close();await wechatPublisher.close();server.close();fs.unlink(lockPath).finally(()=>process.exit(0));});

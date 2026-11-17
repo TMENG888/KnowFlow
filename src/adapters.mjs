@@ -5,6 +5,7 @@ import {douyinSearchCards} from './douyin-ui.mjs';
 import {extractBilibili} from './bilibili.mjs';
 import {readContentDOM} from './content-dom.mjs';
 import {imageIdentity} from './content-cleaning.mjs';
+import {observedCovers,coverURL,normalizeCovers} from './collection-covers.mjs';
 const mediaUrl=v=>typeof v==='string'?v:(v?.url_list||v?.urlList||[]).find(u=>u.startsWith('https://'))||v?.url||null;
 const iso=v=>{if(v==null)return null;const d=new Date(typeof v==='number'?(v<1e12?v*1000:v):v);return Number.isNaN(+d)?String(v):d.toISOString();};
 export function fromObserved(platform,raw){
@@ -66,6 +67,13 @@ export async function extractDetail(page,platform,candidate,browser,{openedObser
   });
   const raw=rawNodes.findLast(v=>String(v.aweme_id||v.noteId||v.note_id||v.id||'')===candidate.id.replace(/^(answer|article)-/,''))||candidate.raw;
   const observed=raw?fromObserved(platform,raw):{};
+  const detailCover=await page.evaluate(({platform,inlineCard,sourceId})=>{
+   const root=platform==='douyin'&&inlineCard?document.querySelector(`[data-e2e-vid="${sourceId}"]`):document;
+   const poster=root?.querySelector('video')?.poster;
+   const meta=inlineCard||platform==='xiaohongshu'?null:document.querySelector('meta[property="og:image"],meta[name="twitter:image"],meta[itemprop="image"]')?.content;
+   const noteCover=platform==='xiaohongshu'?[...document.querySelectorAll('a.cover[href]')].find(a=>{try{return new URL(a.href).pathname==='/explore/'+sourceId;}catch{return false;}})?.querySelector('img')?.src:null;
+   return {poster,meta,noteCover};
+  },{platform,inlineCard:candidate.inlineCard,sourceId:candidate.id});
   const kind=observed.kind||(dom.videos.length||/\/video\//.test(dom.url)?'video':dom.images.length?'image':'article');
   const metrics={likes:null,comments:null,favorites:null,shares:null,views:null,...observed.metrics};
   for(const key of Object.keys(metrics))if(metrics[key]==null)metrics[key]=parseCount(dom.counts[key]);
@@ -73,6 +81,11 @@ export async function extractDetail(page,platform,candidate,browser,{openedObser
   for(const [key,re]of Object.entries(labels))if(metrics[key]==null){const label=dom.actionLabels.find(l=>re.test([l.text,l.aria,l.title].join(' '))&&/\d/.test([l.text,l.aria,l.title].join(' ')));if(label)metrics[key]=parseCount(label.text+' '+(label.aria||'')+' '+(label.title||''));}
   const item={platform,sourceId:candidate.id,url:canonical(platform,dom.url)?.url||candidate.url,title:(platform==='douyin'?(observed.title||candidate.title||dom.title):(dom.title||observed.title||candidate.title))||'',body:(platform==='douyin'?(observed.body||dom.body):(dom.body||observed.body))||'',summary:candidate.summary||dom.description||'',author:observed.author||dom.author||null,publishedAt:observed.publishedAt||dom.publishedAt||null,kind,images:[...new Set([...(observed.images||[]),...dom.images])],metrics,metricSource:raw?.pageStateSource?'rendered_card_state_and_dom':raw?'browser_response_and_dom':'visible_dom',mediaUrl:dom.videos.find(v=>/^https?:/.test(v.url||''))?.url||observed.mediaUrl||null,durationSeconds:dom.videos.find(v=>v.duration)?.duration||observed.durationSeconds||null,captions:dom.videos.flatMap(v=>v.textTracks.flatMap(t=>t.cues)),captionTracks:dom.videos.flatMap(v=>v.tracks),transcript:null,transcriptStatus:kind==='video'?'pending':'not_applicable',collectedAt:new Date().toISOString(),extractionVersion:'playwright-dom-response-v2'};
   if(kind!=='video'&&item.body.replace(/\s/g,'').length<25)throw new Error('DETAIL_CONTENT_MISSING：详情正文不足，搜索摘要未计入正文');
+  item.coverUrls=platform==='xiaohongshu'&&detailCover.noteCover?[detailCover.noteCover]:[...new Set([detailCover.noteCover,...observedCovers(platform,raw||{}),detailCover.poster,detailCover.meta,...(candidate.coverUrls||[]),candidate.poster].map(coverURL).filter(Boolean))].slice(0,4);item.coverSource=item.coverUrls.length?'observed_metadata_or_result_card':null;
+  // For a 图文 gallery the first actual gallery image may also be its cover;
+  // keep it in the body gallery because that placement carries real content.
+  if(!item.coverUrls.length&&platform==='xiaohongshu'&&observed.images?.length){item.coverUrls=[coverURL(observed.images[0])].filter(Boolean);item.coverSource='first_gallery_image';}
+  normalizeCovers(item);
   item.imageUrls=[...item.images];item.videoUrls=[...new Set([item.mediaUrl,...(observed.videoUrls||[]),...dom.videos.map(v=>v.url)].filter(u=>/^https?:/.test(u||'')))];item.videoUrl=item.videoUrls[0]||null;item.resourceLinksObservedAt=item.collectedAt;item.videoUrlMayExpire=item.videoUrls.length>0;
   item.contentBlocks=kind==='video'?[]:await page.evaluate(readContentDOM,{platform});
   // Preserve response-observed gallery order without inventing paragraph anchors.

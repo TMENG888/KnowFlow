@@ -127,19 +127,28 @@ export async function assertRestrictions(page) {
   return text;
 }
 
-const LOGIN_DIALOGS = '[id^="login-full-panel"],.login-container';
+const LOGIN_DIALOGS = '[id^="login-full-panel"],.login-container,#douyin_login_comp_flat_panel_header';
 const LOGIN_CLOSE = [
+  // Prefer the verified header structure over hashed site classes and other
+  // controls inside the login form (e.g. clear-phone-input icons).
+  '#douyin_login_comp_flat_panel_header > div:has(> svg)',
   '[aria-label="关闭"]', '[aria-label="Close"]', '[title="关闭"]',
   '[data-e2e="login-close"]', '[data-e2e="login-close-button"]',
-  '.close-button', '[class*="close"]', '[class*="Close"]', '.YoNA2Hyj',
-  // Observed Douyin header: title followed by a div containing the X SVG.
-  '#douyin_login_comp_flat_panel_header > div:has(> svg)',
+  '.close-button', '[class*="close"]', '[class*="Close"]',
 ];
 
 async function visibleLogin(page) {
   const dialogs = page.locator(LOGIN_DIALOGS);
   for (let i = 0; i < await dialogs.count(); i++)
     if (await loginVisible(dialogs.nth(i))) return dialogs.nth(i);
+  // Some builds expose an accessible dialog rather than a named login portal.
+  // Confirm login-specific content before touching its own close control.
+  const semantic = page.locator('[role="dialog"],[aria-modal="true"]');
+  for (let i = 0; i < await semantic.count(); i++) {
+    const dialog = semantic.nth(i);
+    if (await loginVisible(dialog) && /扫码登录|验证码登录|手机号登录|登录后免费畅享/.test(await dialog.innerText()))
+      return dialog;
+  }
   return null;
 }
 
@@ -160,7 +169,11 @@ export async function dismissLoginPopup(page, { maxClose = 2, controlTimeoutMs =
       dialog = await visibleLogin(page);
       if (!dialog) return closed;
       for (const selector of LOGIN_CLOSE) {
-        const controls = dialog.locator(selector);
+        // When the header itself is our matched dialog, locate its globally
+        // unique ID directly; a descendant locator cannot match its own root.
+        const controls = selector.startsWith('#douyin_login_comp_flat_panel_header') &&
+          await dialog.getAttribute('id') === 'douyin_login_comp_flat_panel_header'
+            ? page.locator(selector) : dialog.locator(selector);
         for (let i = 0; i < (await controls.count()); i++) {
           const control = controls.nth(i);
           if (!(await control.isVisible())) continue;
@@ -198,8 +211,9 @@ export async function dismissLoginPopup(page, { maxClose = 2, controlTimeoutMs =
 async function loginVisible(dialog) {
   // Portals can mount fixed overlays inside a zero-size host div. Visibility
   // of the host alone misses a modal that still intercepts normal clicks.
-  if (!await dialog.count()) return false;
-  return dialog.evaluate((root) =>
+  // Read matching nodes atomically: the dialog may disappear between a count
+  // and evaluate, which would otherwise wait for a modal that has just closed.
+  return dialog.evaluateAll((roots) => roots.some((root) =>
     [root, ...root.querySelectorAll("*")].some((e) => {
       const r = e.getBoundingClientRect(),
         s = getComputedStyle(e);
@@ -214,7 +228,7 @@ async function loginVisible(dialog) {
         s.visibility !== "hidden" &&
         Number(s.opacity) !== 0
       );
-    }),
+    })),
   );
 }
 
@@ -222,14 +236,8 @@ export async function assertAccess(page) {
   const text = await assertRestrictions(page);
   if (/登录后(?:即可|才能|方可)搜索|请登录后搜索/.test(text))
     throw new Error("平台明确要求登录后搜索：关闭普通登录提示后仍需人工登录");
-  for (const selector of ['[id^="login-full-panel"]', ".login-container"]) {
-    const els = page.locator(selector);
-    for (let i = 0; i < (await els.count()); i++)
-      if (await loginVisible(els.nth(i)))
-        throw new Error(
-          "需要人工登录：登录弹窗阻挡搜索框，请先运行 login 命令完成登录",
-        );
-  }
+  if (await visibleLogin(page))
+    throw new Error("需要人工登录：登录弹窗阻挡搜索框，请先运行 login 命令完成登录");
 }
 
 export async function readDropdown(page, platform, inputSelector) {

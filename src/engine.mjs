@@ -32,7 +32,45 @@ export class Engine{
   const v=this.validate(input),task={id:randomUUID(),...v,createdAt:new Date().toISOString(),status:'queued',machine:os.hostname(),stages:v.platforms.map(platform=>({platform,status:'queued',target:v.target,accepted:0,discovered:0,pendingContent:0,failedDetails:0,message:'等待采集'}))};
   this.save(task);this.run(task);return task;
  }
- retry(id,{platforms=null}={}){if(this.running)throw new Error('已有任务运行中');const task=this.store.task(id);if(!task)throw new Error('任务不存在');if(platforms&&(!Array.isArray(platforms)||!platforms.length||platforms.some(p=>!task.platforms.includes(p))))throw new Error('重试平台必须属于原任务');if(platforms)for(const p of platforms)this.recovery.stopPlatform(id,p);else this.recovery.stop(id);task.status='queued';task.stopRequested=false;for(const s of task.stages)if(s.status!=='completed'&&(!platforms||platforms.includes(s.platform))){s.status='queued';s.message='准备从已保存断点继续';}this.save(task);this.run(task,platforms);return task;}
+ updateTarget(id,{target,resume=false}={}){
+  if(this.running)throw new Error('请先安全停止正在采集的任务，再调整目标');
+  const task=this.store.task(id);if(!task)throw new Error('任务不存在');
+  const next=Number(target);if(!Number.isInteger(next)||next<1||next>100)throw new Error('每平台目标量须为1—100条');
+  if(next<task.target)throw new Error('新目标不能低于当前目标，已保存内容会完整保留');
+  if(typeof resume!=='boolean')throw new Error('继续采集参数须为布尔值');
+  const previous=task.target,saved=this.store.items(id);
+  this.recovery.stop(id);this.pendingRecoveries.delete(id);
+  task.target=next;
+  for(const stage of task.stages){
+   stage.target=next;
+   stage.accepted=saved.filter(i=>i.platform===stage.platform&&i.contentStatus==='completed').length;
+   if(stage.status==='completed'&&stage.accepted<next){stage.status='partial';stage.message=`目标已提高至 ${next} 条，已保存 ${stage.accepted} 条；继续采集时补足差额`;}
+  }
+  task.status=task.stopRequested?'stopped':deriveTaskState(task.stages);this.save(task);
+  if(next!==previous)this.log(task,null,`每平台目标由 ${previous} 调整为 ${next} 条，已保存内容及详情队列保留`);
+  return resume?this.retry(id):task;
+ }
+ retry(id,{platforms=null}={}){
+  const task=this.running===id?this.activeTask:this.store.task(id);if(!task)throw new Error('任务不存在');
+  if(platforms&&(!Array.isArray(platforms)||!platforms.length||platforms.some(p=>!task.platforms.includes(p))))throw new Error('重试平台必须属于原任务');
+  if(this.running){
+   if(this.running!==id||!platforms)throw new Error('已有任务运行中；可单独继续本任务已暂停的平台');
+   if(task.stopRequested||this.controllers.get(id)?.signal.aborted)throw new Error('正在安全停止，请等待本轮结束后继续');
+   const chosen=task.stages.filter(s=>platforms.includes(s.platform));
+   if(chosen.some(s=>['queued','searching','collecting','waiting_asr','transcribing','completed'].includes(s.status)))throw new Error('所选平台正在运行或已经达到目标');
+   if(!this.enqueueRecovery)throw new Error('本轮尚未准备就绪，请稍后继续');
+   for(const stage of chosen){
+    this.recovery.stopPlatform(id,stage.platform);stage.status='queued';stage.message='准备仅恢复此平台，已保存内容保留';
+    if(!this.enqueueRecovery(stage.platform)){const pending=this.pendingRecoveries.get(id)||new Set();pending.add(stage.platform);this.pendingRecoveries.set(id,pending);}
+    this.log(task,stage.platform,'人工确认恢复，仅继续此平台的保存断点');
+   }
+   this.save(task);return task;
+  }
+  if(platforms)for(const p of platforms)this.recovery.stopPlatform(id,p);else this.recovery.stop(id);
+  task.status='queued';task.stopRequested=false;
+  for(const s of task.stages)if(s.status!=='completed'&&(!platforms||platforms.includes(s.platform))){s.status='queued';s.message='准备从已保存断点继续';}
+  this.save(task);this.run(task,platforms);return task;
+ }
  stop(id){const task=this.store.task(id);if(!task)throw new Error('任务不存在');task.stopRequested=true;if(this.running!==id)task.status='stopped';this.save(task);this.recovery.stop(id);this.pendingRecoveries.delete(id);this.controllers.get(id)?.abort();return task;}
  drainRecoveries(){if(this.running)return;for(const [id,platforms]of this.pendingRecoveries){this.pendingRecoveries.delete(id);const task=this.store.task(id);if(!task||task.stopRequested)continue;for(const p of platforms)this.recovery.stopPlatform(id,p);this.run(task,[...platforms]);break;}}
  scored(id){
@@ -46,7 +84,7 @@ export class Engine{
   return `tasks/${task.id}/evidence/${filename}`;
  }
  async run(task,onlyPlatforms=null){
-  this.running=task.id;const controller=new AbortController();this.controllers.set(task.id,controller);const signal=controller.signal;
+  this.running=task.id;this.activeTask=task;const controller=new AbortController();this.controllers.set(task.id,controller);const signal=controller.signal;
   try{
    task.status='running';this.save(task);const context=await this.browser.open();
    const runStage=async stage=>{
@@ -88,8 +126,9 @@ export class Engine{
         if(platform==='toutiao')item.navigationEvidence.searchPage=searchPage;
         if(signal.aborted)throw new Error('STOP_REQUESTED');
         const capture=await this.evidence(detail,task,platform,c.id);item.evidence=capture;
+        await this.collectionCovers?.capture(task.id,item,{signal});
         if(item.kind==='video'){
-         if(task.transcribeVideos){stage.status='transcribing';stage.message='等待转写资源；其他平台继续采集';this.save(task);item=await this.mediaSlots.run(()=>transcribe(item,task.id,{signal,onProgress:message=>{stage.message=message;this.save(task);this.log(task,platform,message);}}),signal);}
+         if(task.transcribeVideos){stage.status='waiting_asr';stage.message='等待转写资源；其他平台继续采集';this.save(task);item=await this.mediaSlots.run(()=>{stage.status='transcribing';this.save(task);return transcribe(item,task.id,{signal,onProgress:message=>{stage.message=message;this.save(task);this.log(task,platform,message);}});},signal);}
          else item.transcriptStatus='disabled';
         }
         item.contentStatus=item.kind==='video'?(item.transcriptStatus==='completed'?'completed':'pending'):'completed';
@@ -97,9 +136,11 @@ export class Engine{
         this.store.item(task.id,item);this.knowledge?.enqueue(task.id,item);previous.set(item.sourceId,item);
         stage.accepted=[...previous.values()].filter(x=>x.contentStatus==='completed').length;stage.pendingContent=previous.size-stage.accepted;
         this.log(task,platform,item.contentStatus==='completed'?'正文已保存：'+item.title:'视频主体内容待补：'+item.title,item.contentStatus==='completed'?'info':'warning',{sourceId:c.id,transcriptStatus:item.transcriptStatus});
+        if(item.transcriptStatus==='configuration_error')throw Object.assign(new Error(item.transcriptError),{code:'asr_configuration'});
         signal.removeEventListener('abort',close);
        }catch(e){
         if(signal.aborted)throw e;
+        if(e.code==='asr_configuration')throw e;
         if(/^SOURCE_ID_UNCONFIRMED|^SEARCH_CONTEXT_LOST|^DETAIL_CLOSE_NOT_FOUND/.test(e.message)){keepBlockedDetail=true;const evidencePage=e.detailPage||detail||search;if(evidencePage&&!evidencePage.isClosed()){stage.evidence=await this.evidence(evidencePage,task,platform,'navigation-incomplete');stage.evidenceUrl=evidencePage.url();}throw e;}
         if(e.scope!=='item'&&['login_required','verification_required','risk_controlled','access_denied'].includes(e.code)){
          detail=detail||e.detailPage;
@@ -150,7 +191,7 @@ export class Engine{
    while(jobs.size)await Promise.allSettled([...jobs]);
   }catch(e){for(const stage of task.stages)if(!terminalStates.includes(stage.status)){stage.status=signal.aborted?'stopped':'failed';stage.message=e.message;}this.log(task,null,e.message,'error');}
   finally{
-   this.enqueueRecovery=null;task.stopRequested=task.stopRequested||signal.aborted;task.status=task.stopRequested?'stopped':deriveTaskState(task.stages);task.finishedAt=new Date().toISOString();this.save(task);this.controllers.delete(task.id);this.running=null;
+   this.enqueueRecovery=null;task.stopRequested=task.stopRequested||signal.aborted;task.status=task.stopRequested?'stopped':deriveTaskState(task.stages);task.finishedAt=new Date().toISOString();this.save(task);this.controllers.delete(task.id);this.running=null;this.activeTask=null;
    const dir=path.join(config.outputDir,'tasks',task.id);await fs.mkdir(dir,{recursive:true});await fs.writeFile(path.join(dir,'result.json'),JSON.stringify({task,items:this.scored(task.id)},null,2));
    this.drainRecoveries();
   }

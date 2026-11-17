@@ -1,7 +1,7 @@
 (()=>{
- const running=j=>['segmenting','indexing','retrieving','writing'].includes(j.status);
+ const running=j=>['segmenting','indexing','retrieving','writing','illustrating'].includes(j.status);
  function activeSection(j){if(!running(j))return null;if(j.activeStep?.sectionId)return j.activeStep.sectionId;if(j.status==='writing')return j.sections?.find(s=>!s.draft)?.id;return null;}
- function sectionState(j,s){if(activeSection(j)===s.id)return j.status==='writing'?'正在撰写':'正在召回';if(s.retrievalStale)return'问题已修改';if(s.draftStale)return'草稿待更新';if(s.draft)return'草稿已生成';if(s.evidence)return'素材待审核';return'等待召回';}
+ function sectionState(j,s){if(activeSection(j)===s.id)return j.status==='illustrating'?'正在处理插图':j.status==='writing'?'正在撰写':'正在召回';if(s.retrievalStale)return'问题已修改';if(s.draftStale)return'草稿待更新';if(s.draft)return'草稿已生成';if(s.evidence)return'素材待审核';return'等待召回';}
  function graph(j,expanded=new Set()){
   const nodes=[],edges=[],sections=j.sections||[],rx=700;
   nodes.push({id:'root',kind:'root',x:rx,y:90,title:j.outline?.title||j.reference.title,label:'全文写作思路',subtitle:j.outline?.creationApproach||'点击分析参考文章与全文组织方案',state:running(j)?'正在处理':j.outline?.creationApproach?'已提炼':'待分析'});
@@ -14,6 +14,7 @@
    edges.push({from:id,to:'g:'+s.id});
    nodes.push({id:'d:'+s.id,kind:'draft',sectionId:s.id,x:rx,y:cy+70,label:'章节草稿',title:s.draft?'查看本章草稿':'本章尚未生成',subtitle:s.draftStale?'审核已变化，建议重写':`${currentSectionDraft(j,s).length} 字符`,state:sectionState(j,s),active:activeSection(j)===s.id&&j.status==='writing'});
    edges.push({from:id,to:'d:'+s.id,type:'flow'});previous='d:'+s.id;
+   if(s.draft&&(j.illustrationsEnabled||s.illustrationPlan)){const plan=s.illustrationPlan,done=plan?.items.filter(i=>i.status==='completed').length||0,total=plan?.items.length||0,stale=plan&&plan.sourceText!==currentSectionDraft(j,s);nodes.push({id:'i:'+s.id,kind:'illustration',sectionId:s.id,x:1060,y:cy+70,label:'章节演示插图',title:plan?.needed===false?'无需图解':`${done} / ${total||'待规划'} 张 · 16:9`,subtitle:stale?'正文变化，等待重新规划':plan?.items.find(i=>i.status!=='completed')?.message||plan?.reason||'DeepSeek 将判断位置与图解内容',state:activeSection(j)===s.id&&j.status==='illustrating'?'正在处理':stale?'需重新规划':plan?.needed===false?'已判断':total&&done===total?'已完成':'待处理',active:activeSection(j)===s.id&&j.status==='illustrating'});edges.push({from:'d:'+s.id,to:'i:'+s.id});}
    if(open){
     const query='q:'+s.id;nodes.push({id:query,kind:'query',sectionId:s.id,x:1060,y:cy-70,title:s.query,label:'语义检索问题',subtitle:s.retrievalStale?'已修改，需重新召回':`${s.evidence?.length||0} 个分块 · ${s.evidence?.reduce((n,e)=>n+e.text.length,0)||0} 字符`,state:s.retrievalStale?'待重新召回':s.evidence?'已召回':'等待召回',active:activeSection(j)===s.id&&j.status==='retrieving'});edges.push({from:id,to:query});
     for(const [kind,list,x] of [['reference',s.referenceEvidence||[],340],['evidence',s.evidence||[],1420]])list.forEach((e,n)=>{
